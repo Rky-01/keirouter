@@ -180,6 +180,57 @@ func TestOpenAI_RenderStreamChunk_SequencesRole(t *testing.T) {
 	require.Contains(t, string(done[0]), "[DONE]")
 }
 
+// Cross-dialect: an OpenAI request rendered to Gemini and parsed back must
+// preserve system, roles, and message text.
+func TestCrossDialect_OpenAIToGeminiRoundTrip(t *testing.T) {
+	body := []byte(`{
+		"model": "gemini-2.0-flash",
+		"messages": [
+			{"role": "system", "content": "be terse"},
+			{"role": "user", "content": "ping"},
+			{"role": "assistant", "content": "pong"},
+			{"role": "user", "content": "again"}
+		],
+		"max_tokens": 64
+	}`)
+
+	canonical, err := OpenAICodec{}.ParseRequest(body)
+	require.NoError(t, err)
+
+	gemBody, err := GeminiCodec{}.RenderRequest(canonical)
+	require.NoError(t, err)
+
+	var gemReq map[string]any
+	require.NoError(t, json.Unmarshal(gemBody, &gemReq))
+	require.Contains(t, gemReq, "systemInstruction")
+	require.Contains(t, gemReq, "contents")
+
+	back, err := GeminiCodec{}.ParseRequest(gemBody)
+	require.NoError(t, err)
+	require.Equal(t, "be terse", back.System)
+	require.Len(t, back.Messages, 3)
+	require.Equal(t, "ping", back.Messages[0].TextContent())
+	require.Equal(t, core.RoleAssistant, back.Messages[1].Role)
+	require.Equal(t, "again", back.Messages[2].TextContent())
+}
+
+func TestGemini_ResponseRoundTrip(t *testing.T) {
+	resp := &core.ChatResponse{
+		Model:        "gemini-2.0-flash",
+		Message:      core.Message{Role: core.RoleAssistant, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		FinishReason: core.FinishStop,
+		Usage:        core.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+	}
+	body, err := GeminiCodec{}.RenderResponse(resp)
+	require.NoError(t, err)
+
+	back, err := GeminiCodec{}.ParseResponse(body, "gemini-2.0-flash")
+	require.NoError(t, err)
+	require.Equal(t, "hi", back.Message.TextContent())
+	require.Equal(t, core.FinishStop, back.FinishReason)
+	require.Equal(t, 4, back.Usage.TotalTokens)
+}
+
 func TestRegistry_ResolvesCodecs(t *testing.T) {
 	reg := DefaultRegistry()
 
@@ -190,5 +241,8 @@ func TestRegistry_ResolvesCodecs(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = reg.Codec(core.DialectGemini)
+	require.NoError(t, err, "gemini codec is registered")
+
+	_, err = reg.Codec(core.DialectOllama)
 	require.Error(t, err, "unregistered dialect must error")
 }

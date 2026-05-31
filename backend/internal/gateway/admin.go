@@ -36,6 +36,8 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Delete("/budgets/{id}", s.adminDeleteBudget)
 
 	r.Get("/usage", s.adminUsageSummary)
+
+	r.Get("/cli-tools", s.handleCLITools)
 }
 
 const adminTenant = store.DefaultTenantID

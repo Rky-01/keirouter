@@ -14,6 +14,7 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/budget"
+	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/crypto"
@@ -21,6 +22,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/gateway"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/meter"
+	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -86,12 +88,27 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	bud := budget.New(db.Budgets(), db.Usage())
 	disp := dispatch.New(connRegistry, db.Accounts(), v)
 	slim := slimmer.Default()
+	metrics := observ.New()
+
+	// Semantic cache. Defaults to a local in-memory store keyed by a
+	// deterministic hash embedder (exact-prompt caching). A provider-backed
+	// embedder can be substituted for true near-match semantic caching.
+	semanticCache := cache.New(cache.Config{
+		Enabled:             cfg.Cache.Enabled,
+		SimilarityThreshold: cfg.Cache.SimilarityThreshold,
+		TTL:                 cfg.Cache.TTL,
+		MaxEntries:          10000,
+	}, nil)
+	embedder := cache.NewHashEmbedder(32)
 
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher: disp,
 		Meter:      mtr,
 		Budget:     bud,
 		Slimmer:    slim,
+		Metrics:    metrics,
+		Cache:      semanticCache,
+		Embedder:   embedder,
 		Logger:     log,
 	})
 
@@ -107,6 +124,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Usage:    db.Usage(),
 		Vault:    v,
 		Codecs:   codecs,
+		Metrics:  metrics,
 	})
 
 	srv := &http.Server{

@@ -86,6 +86,7 @@ func DefaultRegistry() *Registry {
 	return NewRegistry(
 		OpenAICodec{},
 		AnthropicCodec{},
+		GeminiCodec{},
 	)
 }
 

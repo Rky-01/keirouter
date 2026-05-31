@@ -12,10 +12,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/identity"
+	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -35,6 +37,7 @@ type Server struct {
 	usage    *store.UsageRepo
 	vault    *vault.Vault
 	codecs   *transform.Registry
+	metrics  *observ.Metrics
 	router   chi.Router
 }
 
@@ -51,6 +54,7 @@ type Deps struct {
 	Usage    *store.UsageRepo
 	Vault    *vault.Vault
 	Codecs   *transform.Registry
+	Metrics  *observ.Metrics
 }
 
 // New builds a gateway Server and wires its routes.
@@ -71,6 +75,7 @@ func New(d Deps) *Server {
 		usage:    d.Usage,
 		vault:    d.Vault,
 		codecs:   d.Codecs,
+		metrics:  d.Metrics,
 	}
 	s.router = s.routes()
 	return s
@@ -93,6 +98,15 @@ func (s *Server) routes() chi.Router {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// Prometheus metrics endpoint. Loopback-guarded by default to avoid leaking
+	// operational telemetry; expose deliberately behind a scraper's network.
+	if s.metrics != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(s.loopbackOnly)
+			r.Handle("/metrics", promhttp.HandlerFor(s.metrics.Registry(), promhttp.HandlerOpts{}))
+		})
+	}
 
 	// OpenAI-compatible API surface (authenticated).
 	r.Group(func(r chi.Router) {

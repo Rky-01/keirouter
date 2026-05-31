@@ -9,9 +9,12 @@ controls.
 Written in Go for a small footprint (single static binary, ~20–30MB RAM idle,
 instant startup) with a React + Tailwind dashboard.
 
-> Status: early development. The core proxy, format translation, token saving,
-> routing/fallback, metering, budgets, and the admin API are implemented and
-> tested. The web dashboard and additional providers are in progress.
+> Status: active development. Implemented and tested: the core proxy; OpenAI /
+> Anthropic / Gemini format translation (unary + streaming); token saving;
+> capability-aware routing/fallback; metering; budgets; embeddings; a semantic
+> response cache; Prometheus metrics; dashboard auth with first-run onboarding;
+> CLI tool auto-config; and the React dashboard. Additional providers, OAuth
+> flows, and the MCP bridge are in progress.
 
 ## Why KeiRouter
 
@@ -25,7 +28,12 @@ instant startup) with a React + Tailwind dashboard.
   tokens. Budgets enforce hard USD caps per key, project, or org.
 - **Secure by default.** Provider secrets are encrypted at rest with envelope
   encryption (AES-256-GCM). API keys are stored only as argon2id hashes and
-  shown in plaintext exactly once.
+  shown in plaintext exactly once. The dashboard is protected by a password
+  (seeded on first run, changed via onboarding) and HMAC session cookies.
+- **Observable.** Prometheus metrics at `/metrics` cover request volume,
+  latency, tokens, cost, fallbacks, and cache hits.
+- **Caches what repeats.** An optional semantic response cache returns stored
+  answers for repeated prompts at zero cost and instant latency.
 
 ## Quick start
 
@@ -36,11 +44,24 @@ cd backend
 go build -o ../keirouter ./cmd/keirouter
 cd ..
 
-# Create your first API key (shown once).
-./keirouter -bootstrap
-
 # Start the server (defaults to 127.0.0.1:20180).
 ./keirouter
+```
+
+Then open the dashboard (run `cd frontend && npm install && npm run dev`, or
+build and let the backend serve it). On first run, sign in with the default
+password `keirouter`; the onboarding flow prompts you to set a new one.
+
+You can also mint an API key from the CLI without the dashboard:
+
+```bash
+./keirouter -bootstrap   # prints a kr_ key once
+```
+
+Run both backend and dashboard together in development:
+
+```bash
+make dev   # backend on :20180, dashboard on :5180
 ```
 
 Or with Docker:
@@ -93,22 +114,25 @@ backend/
   internal/
     core/               canonical domain model (provider-agnostic)
     config/             koanf config (env + YAML)
-    crypto/             envelope encryption + API key hashing
+    crypto/             envelope encryption + API key & password hashing
     store/              SQLite/Postgres repos + embedded migrations
-    transform/          OpenAI <-> Anthropic codecs (unary + streaming)
-    connectors/         provider drivers + catalog
+    transform/          OpenAI / Anthropic / Gemini codecs (unary + streaming)
+    connectors/         provider drivers (chat + embeddings) + catalog
     slimmer/            tool-output compression (token saver)
     terse/              terse-mode prompt injection (output token saver)
     capability/         model capability matrix (anti-downgrade guard)
     dispatch/           account selection + fallback + cooldown
     budget/             hard spend enforcement
     meter/              usage + cost recording
+    cache/              semantic response cache + embedder
+    observ/             Prometheus metrics
+    auth/               dashboard password + session tokens
     identity/           API key issuance + authentication
     vault/              encrypted-credential <-> live-credential bridge
     pipeline/           request lifecycle orchestration
-    gateway/            HTTP edge: auth, routing, admin API
+    gateway/            HTTP edge: auth, routing, admin API, /metrics
     app/                dependency wiring
-frontend/               React + Vite + Tailwind dashboard (in progress)
+frontend/               React + Vite + Tailwind dashboard
 deploy/                 Dockerfile + compose
 ```
 

@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/budget"
+	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/meter"
+	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/terse"
 )
@@ -27,6 +29,9 @@ type Pipeline struct {
 	meter      *meter.Meter
 	budget     *budget.Engine
 	slimmer    *slimmer.Engine
+	metrics    *observ.Metrics
+	cache      *cache.Cache
+	embedder   cache.Embedder
 	log        *slog.Logger
 }
 
@@ -36,6 +41,9 @@ type Deps struct {
 	Meter      *meter.Meter
 	Budget     *budget.Engine
 	Slimmer    *slimmer.Engine
+	Metrics    *observ.Metrics
+	Cache      *cache.Cache
+	Embedder   cache.Embedder
 	Logger     *slog.Logger
 }
 
@@ -50,6 +58,9 @@ func New(d Deps) *Pipeline {
 		meter:      d.Meter,
 		budget:     d.Budget,
 		slimmer:    d.Slimmer,
+		metrics:    d.Metrics,
+		cache:      d.Cache,
+		embedder:   d.Embedder,
 		log:        log,
 	}
 }
@@ -80,6 +91,21 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	if err := p.preflight(ctx, req, opts); err != nil {
 		return nil, err
 	}
+
+	// Semantic cache lookup before any token-saving transform mutates the
+	// request, so cache keys are stable across slimmer/terse settings. Cached
+	// hits cost nothing and skip the upstream entirely.
+	vec := p.embedPrompt(ctx, req)
+	if hit, ok := p.cacheLookup(ctx, vec); ok {
+		if p.metrics != nil {
+			p.metrics.RecordCache(true)
+		}
+		return &Result{Response: hit, Provider: "cache", Model: hit.Model}, nil
+	}
+	if p.metrics != nil && p.cache != nil && p.cache.Enabled() {
+		p.metrics.RecordCache(false)
+	}
+
 	slimStats := p.applyTokenSaving(req, opts)
 
 	required := capability.Required(req)
@@ -100,8 +126,14 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			pe := core.AsProviderError(callErr)
 			lastErr = pe
 			p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
+			if p.metrics != nil {
+				p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
+			}
 			if !pe.Fallbackable() {
 				return nil, pe
+			}
+			if p.metrics != nil {
+				p.metrics.RecordFallback(string(pe.Kind))
 			}
 			p.log.Warn("chat attempt failed, falling back",
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
@@ -109,6 +141,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		}
 
 		cost := p.record(ctx, req.Metadata, attempt, resp.Usage, false, latency)
+		p.cacheStore(ctx, vec, resp)
 		return &Result{
 			Response:   resp,
 			Provider:   attempt.Target.Provider,
@@ -161,8 +194,14 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 			pe := core.AsProviderError(callErr)
 			lastErr = pe
 			p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
+			if p.metrics != nil {
+				p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
+			}
 			if !pe.Fallbackable() {
 				return nil, pe
+			}
+			if p.metrics != nil {
+				p.metrics.RecordFallback(string(pe.Kind))
 			}
 			continue
 		}
@@ -258,7 +297,55 @@ func (p *Pipeline) record(ctx context.Context, meta core.RequestMetadata, attemp
 	if err != nil {
 		p.log.Error("failed to record usage", "err", err)
 	}
+
+	if p.metrics != nil {
+		p.metrics.RecordRequest(
+			attempt.Target.Provider, attempt.Target.Model, "success",
+			latency.Seconds(),
+			usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens, cost,
+		)
+		if cacheHit {
+			p.metrics.RecordCache(true)
+		}
+	}
 	return cost
+}
+
+// embedPrompt computes a cache key vector for the request, or nil when caching
+// is disabled or no embedder is configured.
+func (p *Pipeline) embedPrompt(ctx context.Context, req *core.ChatRequest) []float32 {
+	if p.cache == nil || !p.cache.Enabled() || p.embedder == nil {
+		return nil
+	}
+	vec, err := p.embedder.Embed(ctx, cache.PromptText(req))
+	if err != nil {
+		p.log.Warn("cache embed failed; skipping cache", "err", err)
+		return nil
+	}
+	return vec
+}
+
+// cacheLookup checks the semantic cache for a stored response.
+func (p *Pipeline) cacheLookup(ctx context.Context, vec []float32) (*core.ChatResponse, bool) {
+	if p.cache == nil || len(vec) == 0 {
+		return nil, false
+	}
+	resp, ok, err := p.cache.Lookup(ctx, vec)
+	if err != nil {
+		p.log.Warn("cache lookup failed", "err", err)
+		return nil, false
+	}
+	return resp, ok
+}
+
+// cacheStore caches a successful response under its prompt vector.
+func (p *Pipeline) cacheStore(ctx context.Context, vec []float32, resp *core.ChatResponse) {
+	if p.cache == nil || len(vec) == 0 {
+		return
+	}
+	if err := p.cache.Store(ctx, vec, resp); err != nil {
+		p.log.Warn("cache store failed", "err", err)
+	}
 }
 
 // cloneForAttempt produces a shallow copy of the request with the candidate's
