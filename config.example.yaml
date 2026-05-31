@@ -1,0 +1,61 @@
+# KeiRouter configuration example.
+#
+# All values are optional and have sensible defaults for local single-user use.
+# Every field can also be set via environment variables prefixed KEIROUTER_ with
+# double underscores for nesting, e.g. KEIROUTER_SERVER__PORT=8080.
+#
+# Pass this file with:  keirouter -config config.yaml
+
+server:
+  host: 127.0.0.1
+  port: 20180
+  # Abort a stream that produces no bytes for this long.
+  stream_stall_timeout: 30s
+  # Bound non-streaming upstream calls.
+  request_timeout: 5m
+  # Allowed dashboard origins. Use specific origins in production.
+  cors_origins:
+    - "*"
+
+database:
+  # "sqlite" (default, zero-config) or "postgres".
+  driver: sqlite
+  # SQLite: empty => <data_dir>/keirouter.db. Postgres: required DSN, e.g.
+  #   postgres://user:pass@localhost:5432/keirouter?sslmode=disable
+  dsn: ""
+  # Connection pool sizing (Postgres-relevant).
+  max_open_conns: 10
+  max_idle_conns: 5
+
+security:
+  # Base64 32-byte root key for envelope encryption of stored credentials.
+  # Leave empty for local use (auto-generated to <data_dir>/master.key).
+  # In production, provide via KEIROUTER_SECURITY__MASTER_KEY or a KMS-managed value.
+  master_key: ""
+  # Signs dashboard session tokens. Auto-generated if empty.
+  jwt_secret: ""
+  # How long a dashboard session stays valid.
+  session_ttl: 24h
+  # Reject non-loopback access to the dashboard/admin API. Set false only when
+  # the admin API is protected by a reverse proxy or network policy.
+  bind_loopback_only: true
+
+cache:
+  # Semantic response cache (Pro feature). Off by default.
+  enabled: false
+  # "memory" (local) or "redis".
+  backend: memory
+  redis_url: ""
+  # A candidate cache hit must score at least this cosine similarity.
+  similarity_threshold: 0.95
+  ttl: 1h
+
+log:
+  # debug | info | warn | error
+  level: info
+  # text | json
+  format: text
+
+data:
+  # Root data directory. Empty => ~/.keirouter (or %APPDATA%/keirouter on Windows).
+  dir: ""

@@ -1,0 +1,47 @@
+# Reference material (not part of KeiRouter source)
+_research/
+
+# Go
+backend/bin/
+backend/dist/
+*.test
+*.out
+coverage.txt
+keirouter
+keirouter.exe
+
+# Go build cache / vendor
+vendor/
+
+# Embedded frontend build output (generated)
+backend/internal/webui/dist/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+*.local
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+master.key
+
+# Data / runtime
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/
+.keirouter/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+node_modules/

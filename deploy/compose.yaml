@@ -1,0 +1,61 @@
+# KeiRouter deployment compose.
+#
+# Default profile runs KeiRouter with embedded SQLite (single binary, one
+# volume). The "postgres" profile adds a Postgres backend for team/VPS use:
+#   docker compose --profile postgres up -d
+
+services:
+  keirouter:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: keirouter:latest
+    restart: unless-stopped
+    ports:
+      - "20180:20180"
+    volumes:
+      - keirouter-data:/data
+    environment:
+      # Provide a stable master key in production so credentials survive a
+      # volume reset. Generate with: openssl rand -base64 32
+      KEIROUTER_SECURITY__MASTER_KEY: ${KEIROUTER_MASTER_KEY:-}
+      KEIROUTER_LOG__FORMAT: json
+
+  # Postgres-backed variant. Enable with: --profile postgres
+  keirouter-pg:
+    profiles: ["postgres"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: keirouter:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "20180:20180"
+    environment:
+      KEIROUTER_DATABASE__DRIVER: postgres
+      KEIROUTER_DATABASE__DSN: postgres://keirouter:keirouter@postgres:5432/keirouter?sslmode=disable
+      KEIROUTER_SECURITY__MASTER_KEY: ${KEIROUTER_MASTER_KEY:-}
+      KEIROUTER_LOG__FORMAT: json
+
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keirouter
+      POSTGRES_PASSWORD: keirouter
+      POSTGRES_DB: keirouter
+    volumes:
+      - keirouter-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keirouter"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  keirouter-data:
+  keirouter-pg:
