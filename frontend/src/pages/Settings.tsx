@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sparkles, Zap, MessageSquare, Layers } from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, SectionHeader, Spinner, Toggle, SegmentedControl } from "../components/ui";
+import { useToast } from "../components/Toast";
+import { Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner } from "../components/ui";
 
 // Caveman compression maps to a Gentle / Balanced / Strong segmented control.
 const cavemanOptions = [
@@ -30,6 +31,7 @@ const terseHints: Record<string, string> = {
 
 export function SettingsPage() {
   const qc = useQueryClient();
+  const toast = useToast();
   const settings = useQuery({ queryKey: ["endpoint-settings"], queryFn: () => api.endpointSettings() });
   const [local, setLocal] = useState<EndpointSettings | null>(null);
 
@@ -43,6 +45,7 @@ export function SettingsPage() {
       setLocal(data);
       qc.setQueryData(["endpoint-settings"], data);
     },
+    onError: (e) => toast.error("Couldn't save settings", (e as Error).message),
   });
 
   const update = (patch: Partial<EndpointSettings>) => {
@@ -125,11 +128,7 @@ export function SettingsPage() {
             )}
           </Card>
 
-          {save.isError && (
-            <p className="text-xs text-[color:var(--color-danger)]">
-              Failed to save: {(save.error as Error).message}
-            </p>
-          )}
+          {save.isError && <ErrorBanner message={`Failed to save: ${(save.error as Error).message}`} />}
         </div>
       )}
     </>

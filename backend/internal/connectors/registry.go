@@ -67,12 +67,38 @@ func DefaultRegistry() *Registry {
 	var conns []core.Connector
 	for _, p := range Catalog() {
 		switch {
+		// Provider-id overrides: providers that share a dialect but need a
+		// dedicated transport (special headers, token exchange, request shaping).
+		case p.ID == "github":
+			conns = append(conns, NewGitHubCopilot(p.ID, p.BaseURL))
+		case p.ID == "qwen":
+			conns = append(conns, NewQwen(p.ID, p.BaseURL))
+		case p.ID == "iflow":
+			conns = append(conns, NewIFlow(p.ID, p.BaseURL))
 		case webOnlyProviders[p.ID]:
 			conns = append(conns, NewWebConnector(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectAnthropic:
 			conns = append(conns, NewAnthropic(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOpenAI:
 			conns = append(conns, NewOpenAICompatible(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectGemini:
+			conns = append(conns, NewGemini(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectOllama:
+			conns = append(conns, NewOllama(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectVertex:
+			conns = append(conns, NewVertex(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectOpenAIResponses:
+			conns = append(conns, NewOpenAIResponses(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectGeminiCLI:
+			conns = append(conns, NewGeminiCLI(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectAntigravity:
+			conns = append(conns, NewAntigravity(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectCommandCode:
+			conns = append(conns, NewCommandCode(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectKiro:
+			conns = append(conns, NewKiro(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectCursor:
+			conns = append(conns, NewCursor(p.ID, p.BaseURL))
 		default:
 			// Dialect not yet drivable; skip connector creation.
 		}
@@ -84,7 +110,9 @@ func DefaultRegistry() *Registry {
 // given upstream dialect today.
 func DrivableDialect(d core.Dialect) bool {
 	switch d {
-	case core.DialectOpenAI, core.DialectAnthropic:
+	case core.DialectOpenAI, core.DialectAnthropic, core.DialectGemini, core.DialectOllama,
+		core.DialectVertex, core.DialectOpenAIResponses, core.DialectGeminiCLI, core.DialectAntigravity,
+		core.DialectCommandCode, core.DialectKiro, core.DialectCursor:
 		return true
 	default:
 		return false

@@ -16,6 +16,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,36 @@ func doJSONMethod(ctx context.Context, method, provider, model, url string, body
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, transportError(ctx, provider, model, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpStatusError(provider, model, resp, respBody)
+	}
+	return respBody, nil
+}
+
+// doFormPOST performs an application/x-www-form-urlencoded POST and returns the
+// response body, mapping transport and HTTP errors to ProviderErrors. Used for
+// OAuth token endpoints (refresh, JWT-bearer assertion exchange).
+func doFormPOST(ctx context.Context, provider, model, endpoint string, form url.Values, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -207,6 +238,57 @@ func openStream(ctx context.Context, provider, model, url string, body []byte, h
 		return nil, httpStatusError(provider, model, resp, errBody)
 	}
 	return resp, nil
+}
+
+// streamParser is the subset of a codec the SSE pump needs: turning one
+// upstream SSE data payload into canonical chunks.
+type streamParser interface {
+	ParseStreamLine(line []byte, model string) ([]core.StreamChunk, error)
+}
+
+// scanOpenAISSE consumes an OpenAI-style SSE response, parsing each "data:"
+// payload through the given codec and emitting canonical chunks on the returned
+// channel. It owns resp.Body and closes it when done. Shared by the
+// OpenAI-compatible subscription connectors (Qwen, iFlow, ...) to avoid
+// duplicating the streaming goroutine.
+func scanOpenAISSE(ctx context.Context, provider, model string, resp *http.Response, codec streamParser) <-chan core.StreamChunk {
+	out := make(chan core.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+
+		scanner := sseScanner(resp.Body)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			payload, ok := parseSSEData(scanner.Text())
+			if !ok {
+				continue
+			}
+			chunks, perr := codec.ParseStreamLine([]byte(payload), model)
+			if perr != nil {
+				continue
+			}
+			for _, ch := range chunks {
+				select {
+				case out <- ch:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			out <- core.StreamChunk{
+				Type: core.ChunkError,
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: provider, Model: model, Message: err.Error(), Cause: err},
+			}
+		}
+	}()
+	return out
 }
 
 // sseScanner returns a bufio.Scanner configured for SSE: it reads one logical

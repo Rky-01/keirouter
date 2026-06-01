@@ -37,11 +37,26 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Delete("/budgets/{id}", s.adminDeleteBudget)
 
 	r.Get("/usage", s.adminUsageSummary)
+	r.Get("/usage/insights", s.adminUsageInsights)
+	r.Get("/quota", s.adminQuotaUsage)
+	r.Get("/console", s.adminConsoleLog)
+
+	r.Get("/proxy-pools", s.adminListProxyPools)
+	r.Post("/proxy-pools", s.adminCreateProxyPool)
+	r.Delete("/proxy-pools/{id}", s.adminDeleteProxyPool)
+
+	r.Get("/skills", s.adminListSkills)
+	r.Post("/skills", s.adminCreateSkill)
+	r.Post("/skills/{id}", s.adminUpdateSkill)
+	r.Delete("/skills/{id}", s.adminDeleteSkill)
 
 	r.Get("/settings/endpoint", s.adminGetEndpointSettings)
 	r.Post("/settings/endpoint", s.adminUpdateEndpointSettings)
+	r.Get("/settings/access", s.adminGetAccessSettings)
+	r.Post("/settings/access", s.adminUpdateAccessSettings)
 
 	s.mountOAuth(r)
+	s.mountKiro(r)
 
 	r.Get("/cli-tools", s.handleCLITools)
 }

@@ -3,12 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Wallet, Plus, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, SectionHeader, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState } from "../components/ui";
+import { useToast } from "../components/Toast";
+import { Card, SectionHeader, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState, ErrorBanner } from "../components/ui";
 
 const periods = ["daily", "weekly", "monthly", "total"];
 
 export function BudgetsPage() {
   const qc = useQueryClient();
+  const toast = useToast();
   const budgets = useQuery({ queryKey: ["budgets"], queryFn: () => api.listBudgets() });
 
   const [limit, setLimit] = useState("");
@@ -21,13 +23,21 @@ export function BudgetsPage() {
       qc.invalidateQueries({ queryKey: ["budgets"] });
       setLimit("");
       setError("");
+      toast.success("Budget created");
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      setError(e.message);
+      toast.error("Couldn't create budget", e.message);
+    },
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteBudget(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["budgets"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["budgets"] });
+      toast.success("Budget removed");
+    },
+    onError: (e: Error) => toast.error("Couldn't remove budget", e.message),
   });
 
   return (
@@ -67,7 +77,11 @@ export function BudgetsPage() {
             <Plus className="h-4 w-4" />
             {create.isPending ? "Creating…" : "Create budget"}
           </Button>
-          {error && <span className="text-xs text-[color:var(--color-danger)]">{error}</span>}
+          {error && (
+            <div className="w-full">
+              <ErrorBanner message={error} />
+            </div>
+          )}
         </form>
       </Card>
 

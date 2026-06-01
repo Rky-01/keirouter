@@ -6,7 +6,7 @@ import type {
   ReactNode,
   SelectHTMLAttributes,
 } from "react";
-import type { LucideIcon } from "lucide-react";
+import { AlertCircle, type LucideIcon } from "lucide-react";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
@@ -161,6 +161,31 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
       <p className="text-sm text-[var(--text-muted)]">{title}</p>
       {hint && <p className="mt-1 text-xs text-[var(--text-muted)]">{hint}</p>}
     </div>
+  );
+}
+
+// ErrorBanner is the consistent inline error surface used inside forms and
+// cards. For transient feedback prefer a toast; use this for persistent,
+// in-context errors (failed loads, validation summaries).
+export function ErrorBanner({ message, className = "" }: { message: string; className?: string }) {
+  return (
+    <div
+      role="alert"
+      className={`flex items-start gap-2.5 rounded-lg border border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/8 px-3.5 py-2.5 ${className}`}
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--color-danger)]" strokeWidth={2} />
+      <p className="text-sm leading-snug text-[color:var(--color-danger)]">{message}</p>
+    </div>
+  );
+}
+
+// ErrorCard is a full-card error state for failed data loads.
+export function ErrorCard({ message }: { message: string }) {
+  return (
+    <Card className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+      <AlertCircle className="h-6 w-6 text-[color:var(--color-danger)]" strokeWidth={2} />
+      <p className="text-sm text-[color:var(--color-danger)]">{message}</p>
+    </Card>
   );
 }
 

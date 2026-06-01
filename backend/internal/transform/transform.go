@@ -87,6 +87,10 @@ func DefaultRegistry() *Registry {
 		OpenAICodec{},
 		AnthropicCodec{},
 		GeminiCodec{},
+		OllamaCodec{},
+		OpenAIResponsesCodec{},
+		CommandCodeCodec{},
+		KiroCodec{},
 	)
 }
 

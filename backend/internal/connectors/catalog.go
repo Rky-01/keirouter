@@ -143,6 +143,12 @@ func oauthProviders() []ProviderSpec {
 		{ID: "cline", DisplayName: "Cline", Alias: "cl", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.cline.bot/api/v1", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
 			Color: "#5B9BD5", Website: "https://cline.bot"},
+		{ID: "qwen", DisplayName: "Qwen Code", Alias: "qwen", Dialect: core.DialectOpenAI,
+			BaseURL: "https://portal.qwen.ai/v1/chat/completions", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
+			Color: "#615CED", Website: "https://chat.qwen.ai", Deprecated: true, Notice: risk},
+		{ID: "iflow", DisplayName: "iFlow", Alias: "iflow", Dialect: core.DialectOpenAI,
+			BaseURL: "https://apis.iflow.cn/v1/chat/completions", AuthKind: "oauth", AuthModes: []string{"oauth", "api_key"}, ServiceKinds: llm(),
+			Color: "#2563EB", Website: "https://iflow.cn", Deprecated: true, Notice: risk},
 	}
 }
 

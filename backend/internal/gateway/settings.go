@@ -143,3 +143,94 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, current)
 }
+
+// ---- access settings --------------------------------------------------------
+
+// accessSettingsKey is the settings-store key for the Endpoints page access
+// options (local access, secure tunnel, Tailscale), mirroring 9router.
+const accessSettingsKey = "access_settings"
+
+// AccessSettings holds the endpoint reachability toggles. These are dashboard
+// preferences; the actual tunnels are provisioned out-of-band, so the toggles
+// record intent and surface the primary endpoint URL.
+type AccessSettings struct {
+	LocalEnabled  bool `json:"local_enabled"`
+	TunnelEnabled bool `json:"tunnel_enabled"`
+	Tailscale     bool `json:"tailscale_enabled"`
+}
+
+func defaultAccessSettings() AccessSettings {
+	return AccessSettings{LocalEnabled: true, TunnelEnabled: false, Tailscale: false}
+}
+
+func (s *Server) loadAccessSettings(ctx context.Context) AccessSettings {
+	def := defaultAccessSettings()
+	if s.settings == nil {
+		return def
+	}
+	raw, err := s.settings.Get(ctx, accessSettingsKey)
+	if err != nil || raw == "" {
+		return def
+	}
+	var as AccessSettings
+	if err := json.Unmarshal([]byte(raw), &as); err != nil {
+		return def
+	}
+	return as
+}
+
+// adminGetAccessSettings returns the access options plus the primary endpoint
+// URL derived from the request, so the dashboard can render the Endpoints page.
+func (s *Server) adminGetAccessSettings(w http.ResponseWriter, r *http.Request) {
+	as := s.loadAccessSettings(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"local_enabled":     as.LocalEnabled,
+		"tunnel_enabled":    as.TunnelEnabled,
+		"tailscale_enabled": as.Tailscale,
+		"endpoint_url":      s.publicBaseURL(r) + "/v1",
+	})
+}
+
+// adminUpdateAccessSettings persists the access option toggles, merging a
+// partial body over the current settings.
+func (s *Server) adminUpdateAccessSettings(w http.ResponseWriter, r *http.Request) {
+	if s.settings == nil {
+		writeError(w, http.StatusInternalServerError, "settings store not configured")
+		return
+	}
+	current := s.loadAccessSettings(r.Context())
+
+	var patch struct {
+		LocalEnabled  *bool `json:"local_enabled"`
+		TunnelEnabled *bool `json:"tunnel_enabled"`
+		Tailscale     *bool `json:"tailscale_enabled"`
+	}
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	if patch.LocalEnabled != nil {
+		current.LocalEnabled = *patch.LocalEnabled
+	}
+	if patch.TunnelEnabled != nil {
+		current.TunnelEnabled = *patch.TunnelEnabled
+	}
+	if patch.Tailscale != nil {
+		current.Tailscale = *patch.Tailscale
+	}
+
+	raw, err := json.Marshal(current)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.settings.Set(r.Context(), accessSettingsKey, string(raw)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"local_enabled":     current.LocalEnabled,
+		"tunnel_enabled":    current.TunnelEnabled,
+		"tailscale_enabled": current.Tailscale,
+		"endpoint_url":      s.publicBaseURL(r) + "/v1",
+	})
+}

@@ -4,9 +4,15 @@
   KeiRouter design system.
 
   A calm, professional palette built on warm-neutral zinc with a single muted
-  sage/teal accent. Deliberately avoids the violet/fuchsia gradients and neon
-  glows of generic AI dashboards. Light and dark are both first-class.
+  sage/teal accent, matching the light-mode reference design. Deliberately
+  avoids the violet/fuchsia gradients and neon glows of generic AI dashboards.
+
+  The app is light-mode only. We redefine Tailwind's `dark:` variant to be
+  class-based (it never matches because `.dark` is never applied), so the OS
+  dark-mode preference can't flip any colors and the existing `dark:` utility
+  classes in components stay inert.
 */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   /* Accent: muted sage/teal. */
@@ -46,7 +52,10 @@
 }
 
 :root {
-  /* Warm off-white app canvas, slightly cooler elevated surfaces. */
+  /* Warm off-white app canvas, slightly cooler elevated surfaces. Locked to
+     light mode to match the reference design — no dark-mode overrides. */
+  color-scheme: light;
+
   --bg: #f7f6f3;
   --bg-elevated: #ffffff;
   --bg-subtle: var(--color-ink-100);
@@ -59,22 +68,6 @@
   --shadow-card: 0 1px 2px rgba(26, 26, 24, 0.04), 0 1px 3px rgba(26, 26, 24, 0.06);
   --shadow-pop: 0 4px 12px rgba(26, 26, 24, 0.08), 0 2px 4px rgba(26, 26, 24, 0.05);
   --shadow-float: 0 12px 32px rgba(26, 26, 24, 0.12), 0 4px 8px rgba(26, 26, 24, 0.06);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: var(--color-ink-950);
-    --bg-elevated: var(--color-ink-900);
-    --bg-subtle: var(--color-ink-800);
-    --border: var(--color-ink-800);
-    --border-strong: var(--color-ink-700);
-    --text: var(--color-ink-100);
-    --text-muted: var(--color-ink-400);
-
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.35);
-    --shadow-pop: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
-    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.5), 0 4px 8px rgba(0, 0, 0, 0.35);
-  }
 }
 
 html,
@@ -97,4 +90,16 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-ink-300) transparent;
+}
+
+/* Toast entrance animation: slide up + fade in. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

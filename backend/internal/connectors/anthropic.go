@@ -39,6 +39,11 @@ func (c *Anthropic) headers(creds core.Credentials) map[string]string {
 	switch {
 	case creds.AccessToken != "":
 		h["Authorization"] = bearer(creds.AccessToken)
+		// Claude subscription OAuth tokens require the full Claude Code CLI
+		// fingerprint, or Anthropic rejects/flags them. Merge the spoof headers.
+		if isClaudeOAuthToken(creds.AccessToken) {
+			h = mergeHeaders(h, claudeCLISpoofHeaders())
+		}
 	case creds.APIKey != "":
 		h["x-api-key"] = creds.APIKey
 	}
@@ -53,12 +58,17 @@ func (c *Anthropic) Chat(ctx context.Context, req *core.ChatRequest, creds core.
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
+	// Cloak the request to look like Claude Code when using a subscription OAuth
+	// token. toolNameMap reverses the "_ide" tool renaming on the response.
+	body, toolNameMap := applyClaudeCloaking(body, creds.AccessToken)
+
 	url := joinURL(c.baseURL(creds), "messages")
 	respBody, err := doJSON(ctx, c.id, req.Model, url, body, c.headers(creds))
 	if err != nil {
 		return nil, err
 	}
 
+	respBody = decloakClaudeToolNames(respBody, toolNameMap)
 	resp, err := c.codec.ParseResponse(respBody, req.Model)
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
@@ -74,6 +84,8 @@ func (c *Anthropic) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
+
+	body, toolNameMap := applyClaudeCloaking(body, creds.AccessToken)
 
 	url := joinURL(c.baseURL(creds), "messages")
 	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
@@ -103,6 +115,12 @@ func (c *Anthropic) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 				continue
 			}
 			for _, ch := range chunks {
+				// Decloak streamed tool-call names ("foo_ide" → "foo").
+				if ch.Type == core.ChunkToolCall && ch.ToolCall != nil && len(toolNameMap) > 0 {
+					if orig, ok := toolNameMap[ch.ToolCall.Name]; ok {
+						ch.ToolCall.Name = orig
+					}
+				}
 				select {
 				case out <- ch:
 				case <-ctx.Done():

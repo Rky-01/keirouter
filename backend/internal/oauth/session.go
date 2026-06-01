@@ -19,6 +19,14 @@ type Session struct {
 	DeviceCode string
 	Interval   int
 
+	// Kiro (AWS SSO OIDC) device-flow fields. The registered client credentials
+	// are needed to poll for and later refresh tokens.
+	KiroClientID     string
+	KiroClientSecret string
+	KiroRegion       string
+	KiroStartURL     string
+	KiroAuthMethod   string // builder-id | idc
+
 	ExpiresAt time.Time
 }
 

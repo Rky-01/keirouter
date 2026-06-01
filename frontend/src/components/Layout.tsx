@@ -4,9 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   LayoutGrid,
   Boxes,
-  Plug,
   GitBranch,
-  KeyRound,
   Wallet,
   Sparkles,
   Search,
@@ -15,6 +13,14 @@ import {
   ChevronDown,
   Power,
   LogOut,
+  Network,
+  BarChart3,
+  Clock,
+  TerminalSquare,
+  Image,
+  Waypoints,
+  ScrollText,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -37,17 +43,25 @@ const navGroups: NavGroup[] = [
     items: [
       { to: "/", label: "Overview", icon: LayoutGrid, end: true },
       { to: "/providers", label: "Providers", icon: Boxes },
-      { to: "/accounts", label: "Accounts", icon: KeyRound },
-      { to: "/connections", label: "Connections", icon: Plug },
-      { to: "/chains", label: "Routing Chains", icon: GitBranch },
+      { to: "/endpoints", label: "Endpoints", icon: Network },
+      { to: "/chains", label: "Combos", icon: GitBranch },
+      { to: "/usage", label: "Usage", icon: BarChart3 },
+      { to: "/quota", label: "Quota Tracker", icon: Clock },
     ],
+  },
+  {
+    heading: "Tools",
+    items: [{ to: "/cli-tools", label: "CLI Tools", icon: TerminalSquare }],
   },
   {
     heading: "System",
     items: [
-      { to: "/keys", label: "API Keys", icon: KeyRound },
+      { to: "/media", label: "Media Providers", icon: Image },
+      { to: "/proxy-pools", label: "Proxy Pools", icon: Waypoints },
+      { to: "/skills", label: "Skills", icon: Sparkles },
+      { to: "/console", label: "Console Log", icon: ScrollText },
       { to: "/budgets", label: "Budgets", icon: Wallet },
-      { to: "/settings", label: "Token Saving", icon: Sparkles },
+      { to: "/settings", label: "Token Saving", icon: Zap },
     ],
   },
 ];
@@ -71,9 +85,8 @@ export function Layout() {
 function Sidebar() {
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-elevated)]">
-      <div className="flex items-center gap-2.5 px-6 py-5">
-        <img src="/keirouter-logo.png" alt="KeiRouter" className="h-8 w-8 rounded-lg object-contain" />
-        <span className="text-lg font-semibold tracking-tight">KeiRouter</span>
+      <div className="px-5 py-5">
+        <img src="/keirouter-logo.png" alt="KeiRouter" className="h-10 w-full object-contain object-left" />
       </div>
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-2">

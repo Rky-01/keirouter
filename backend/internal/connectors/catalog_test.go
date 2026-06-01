@@ -82,26 +82,45 @@ func TestFindModel(t *testing.T) {
 }
 
 func TestDrivableDialect(t *testing.T) {
-	if !DrivableDialect(core.DialectOpenAI) || !DrivableDialect(core.DialectAnthropic) {
-		t.Error("openai and anthropic dialects must be drivable")
+	for _, d := range []core.Dialect{
+		core.DialectOpenAI, core.DialectAnthropic, core.DialectGemini, core.DialectOllama,
+	} {
+		if !DrivableDialect(d) {
+			t.Errorf("dialect %q must be drivable", d)
+		}
 	}
-	if DrivableDialect(core.DialectKiro) {
-		t.Error("kiro dialect should not be drivable yet")
+	// All proprietary/subscription dialects are now drivable: the full 9router
+	// transport surface has been ported.
+	for _, d := range []core.Dialect{
+		core.DialectKiro, core.DialectGeminiCLI, core.DialectAntigravity,
+		core.DialectCommandCode, core.DialectCursor,
+	} {
+		if !DrivableDialect(d) {
+			t.Errorf("dialect %q must be drivable", d)
+		}
+	}
+	// An unknown dialect remains non-drivable.
+	if DrivableDialect(core.Dialect("does-not-exist")) {
+		t.Error("unknown dialect must not be drivable")
 	}
 }
 
 func TestRegistryRegistersDrivableProviders(t *testing.T) {
 	r := DefaultRegistry()
-	// OpenAI (chat) and a web provider should be registered.
-	for _, id := range []string{"openai", "anthropic", "tavily", "firecrawl"} {
+	// OpenAI/Anthropic chat, Gemini, Ollama, and web providers should be registered.
+	for _, id := range []string{"openai", "anthropic", "gemini", "ollama", "ollama-local", "tavily", "firecrawl"} {
 		if !r.Has(id) {
 			t.Errorf("registry should have connector for %q", id)
 		}
 	}
-	// Proprietary-dialect providers should NOT have a connector yet.
-	for _, id := range []string{"kiro", "cursor", "gemini"} {
-		if r.Has(id) {
-			t.Errorf("registry should not have connector for not-yet-drivable %q", id)
+	// Every subscription/proprietary provider now has a connector.
+	for _, id := range []string{"kiro", "gemini-cli", "antigravity", "commandcode", "cursor", "github", "qwen", "iflow"} {
+		if !r.Has(id) {
+			t.Errorf("registry should have connector for %q", id)
 		}
+	}
+	// An unknown provider still has no connector.
+	if r.Has("does-not-exist") {
+		t.Error("registry should not have a connector for an unknown provider")
 	}
 }

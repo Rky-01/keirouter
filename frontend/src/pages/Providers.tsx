@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Boxes } from "lucide-react";
-import { api, type Provider } from "../lib/api";
+import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Badge, Spinner, EmptyState } from "../components/ui";
+import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot } from "../components/ui";
 
 // kindFilters are the service-kind tabs shown above the provider grid.
 const kindFilters = [
@@ -17,33 +18,38 @@ const kindFilters = [
   { id: "fetch", label: "Web Fetch" },
 ];
 
-const kindLabels: Record<string, string> = {
-  llm: "Chat",
-  embedding: "Embed",
-  image: "Image",
-  stt: "STT",
-  tts: "TTS",
-  search: "Search",
-  fetch: "Fetch",
-};
-
 export function ProvidersPage() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
+  const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
   const [filter, setFilter] = useState("all");
 
-  const list = useMemo(() => {
+  // Count accounts per provider id so we can split connected vs available.
+  const accountsByProvider = useMemo(() => {
+    const map = new Map<string, Account[]>();
+    for (const a of accounts.data?.accounts ?? []) {
+      const list = map.get(a.provider) ?? [];
+      list.push(a);
+      map.set(a.provider, list);
+    }
+    return map;
+  }, [accounts.data]);
+
+  const visible = useMemo(() => {
     const all = providers.data?.providers ?? [];
-    const visible = all.filter((p) => !p.hidden);
-    if (filter === "all") return visible;
-    return visible.filter((p) => p.service_kinds.includes(filter));
+    return all
+      .filter((p) => !p.hidden)
+      .filter((p) => filter === "all" || p.service_kinds.includes(filter));
   }, [providers.data, filter]);
+
+  const connected = visible.filter((p) => accountsByProvider.has(p.id));
+  const available = visible.filter((p) => !accountsByProvider.has(p.id));
 
   return (
     <>
       <PageHeader
         title="Providers"
         icon={Boxes}
-        description="Built-in providers you can connect accounts to. Filter by what each one can do."
+        description="Connect and manage AI providers to power your routing."
       />
 
       <div className="mb-5 flex flex-wrap gap-1.5">
@@ -54,7 +60,7 @@ export function ProvidersPage() {
             className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
               filter === k.id
                 ? "bg-accent-600 text-white shadow-sm"
-                : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100 dark:hover:bg-ink-800"
+                : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100"
             }`}
           >
             {k.label}
@@ -62,49 +68,90 @@ export function ProvidersPage() {
         ))}
       </div>
 
-      <Card>
-        <CardHeader title={`${list.length} providers`} />
-        {providers.isLoading ? (
-          <Spinner />
-        ) : !list.length ? (
-          <EmptyState title="No providers for this capability" />
-        ) : (
-          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-b-2xl bg-[var(--border)] sm:grid-cols-2">
-            {list.map((p) => (
-              <ProviderRow key={p.id} provider={p} />
-            ))}
-          </div>
-        )}
-      </Card>
+      {providers.isLoading ? (
+        <Spinner />
+      ) : (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader
+              title="Connected providers"
+              description="These providers have accounts and are ready to use."
+              action={<Badge tone="accent">{connected.length}</Badge>}
+            />
+            {!connected.length ? (
+              <EmptyState
+                title="No connected providers yet"
+                hint="Pick a provider below to add your first account."
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl bg-[var(--border)] sm:grid-cols-3 lg:grid-cols-4">
+                {connected.map((p) => (
+                  <ProviderCard
+                    key={p.id}
+                    provider={p}
+                    accountCount={accountsByProvider.get(p.id)?.length ?? 0}
+                  />
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="Available providers"
+              description="Add new providers to expand your routing options."
+              action={<Badge tone="neutral">{available.length}</Badge>}
+            />
+            {!available.length ? (
+              <EmptyState title="No providers for this capability" />
+            ) : (
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-b-2xl bg-[var(--border)] sm:grid-cols-3 lg:grid-cols-4">
+                {available.map((p) => (
+                  <ProviderCard key={p.id} provider={p} accountCount={0} />
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
     </>
   );
 }
 
-function ProviderRow({ provider: p }: { provider: Provider }) {
+function ProviderCard({ provider: p, accountCount }: { provider: Provider; accountCount: number }) {
+  const navigate = useNavigate();
+  const connected = accountCount > 0;
+
   return (
-    <div className="flex items-start gap-3 bg-[var(--bg-elevated)] px-5 py-4 transition-colors hover:bg-ink-50 dark:hover:bg-ink-800/40">
-      <ProviderIcon provider={p} />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-sm font-medium">{p.display_name}</span>
-          {p.deprecated && <Badge tone="danger">risk</Badge>}
-          {!p.drivable && <Badge tone="neutral">soon</Badge>}
-        </div>
-        <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{p.id}</p>
-        <div className="mt-2 flex flex-wrap gap-1">
-          {p.service_kinds.map((k) => (
-            <Badge key={k} tone="accent">
-              {kindLabels[k] ?? k}
-            </Badge>
-          ))}
-        </div>
-        {p.input_per_m || p.output_per_m ? (
-          <p className="mt-2 text-xs text-[var(--text-muted)]">
-            ${p.input_per_m}/${p.output_per_m} per 1M tokens
-          </p>
+    <button
+      onClick={() => navigate(`/providers/${p.id}`)}
+      className="flex h-full flex-col items-start gap-3 bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50"
+    >
+      <div className="flex w-full items-start justify-between gap-2">
+        <ProviderIcon provider={p} />
+        {connected ? (
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-accent-100 px-2 py-0.5 text-xs font-medium text-accent-700">
+            <StatusDot tone="success" />
+            Connected
+          </span>
+        ) : p.deprecated ? (
+          <Badge tone="danger">risk</Badge>
+        ) : !p.drivable ? (
+          <Badge tone="neutral">soon</Badge>
         ) : null}
       </div>
-    </div>
+
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">{p.display_name}</p>
+        <p className="mt-0.5 truncate font-mono text-xs text-[var(--text-muted)]">{p.id}</p>
+      </div>
+
+      <p className="mt-auto text-xs text-[var(--text-muted)]">
+        {connected
+          ? `${accountCount} ${accountCount === 1 ? "account" : "accounts"}`
+          : "Connect"}
+      </p>
+    </button>
   );
 }
 

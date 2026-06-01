@@ -58,8 +58,8 @@ function LoginScreen() {
     <div className="flex h-full items-center justify-center px-4">
       <Card className="w-full max-w-sm p-8 shadow-[var(--shadow-pop)]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <img src="/keirouter-logo.png" alt="KeiRouter" className="h-12 w-12 rounded-xl object-contain" />
-          <h1 className="mt-3 text-lg font-semibold tracking-tight">Sign in to KeiRouter</h1>
+          <img src="/keirouter-logo.png" alt="KeiRouter" className="h-12 object-contain" />
+          <h1 className="mt-4 text-lg font-semibold tracking-tight">Sign in to your dashboard</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">Enter your dashboard password to continue.</p>
         </div>
         <form
@@ -120,10 +120,8 @@ function OnboardingScreen() {
   return (
     <div className="flex h-full items-center justify-center px-4">
       <Card className="w-full max-w-md p-8 shadow-[var(--shadow-pop)]">
-        <div className="mb-2 flex items-center gap-3">
-          <img src="/keirouter-logo.png" alt="KeiRouter" className="h-10 w-10 rounded-xl object-contain" />
-          <h1 className="text-lg font-semibold tracking-tight">Welcome to KeiRouter</h1>
-        </div>
+        <img src="/keirouter-logo.png" alt="KeiRouter" className="mb-4 h-11 object-contain" />
+        <h1 className="text-lg font-semibold tracking-tight">Welcome to KeiRouter</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">
           You're signed in with the default password. Set a new one to secure your dashboard.
         </p>

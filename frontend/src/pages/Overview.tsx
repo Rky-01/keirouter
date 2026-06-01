@@ -12,7 +12,7 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, SectionHeader, Spinner, StatCard } from "../components/ui";
+import { Card, SectionHeader, Spinner, StatCard, ErrorCard } from "../components/ui";
 
 const periods = [
   { value: "today", label: "Today" },
@@ -51,9 +51,7 @@ export function OverviewPage() {
       {usage.isLoading ? (
         <Spinner />
       ) : usage.isError ? (
-        <Card className="px-6 py-10 text-center text-sm text-[color:var(--color-danger)]">
-          Failed to load usage. Is the backend running?
-        </Card>
+        <ErrorCard message="Failed to load usage. Is the backend running?" />
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

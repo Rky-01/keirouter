@@ -111,6 +111,118 @@ export interface UsageSummary {
   since: string;
 }
 
+export interface ProviderUsage {
+  provider: string;
+  display_name: string;
+  color: string;
+  icon: string;
+  total_requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  share_pct: number;
+}
+
+export interface RecentActivity {
+  id: string;
+  provider: string;
+  model: string;
+  tokens: number;
+  cost_usd: number;
+  cache_hit: boolean;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface SeriesPoint {
+  label: string;
+  count: number;
+}
+
+export interface UsageInsights {
+  summary: {
+    total_requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cached_tokens: number;
+    cost_usd: number;
+    cache_hits: number;
+    success_rate: number;
+    avg_latency_ms: number;
+    since: string;
+  };
+  providers: ProviderUsage[];
+  recent: RecentActivity[];
+  series: SeriesPoint[];
+  busiest: string;
+}
+
+export interface QuotaAccount {
+  id: string;
+  provider: string;
+  provider_name: string;
+  label: string;
+  auth_kind: string;
+  priority: number;
+  status: string; // active | paused | needs_attention
+  total_requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  cost_usd: number;
+  updated_at: string;
+}
+
+export interface ConsoleEntry {
+  id: string;
+  level: string; // info | warn | error
+  provider: string;
+  model: string;
+  tokens: number;
+  cost_usd: number;
+  cache_hit: boolean;
+  latency_ms: number;
+  created_at: string;
+}
+
+export interface ProxyPool {
+  id: string;
+  name: string;
+  proxies: string[];
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AccessSettings {
+  local_enabled: boolean;
+  tunnel_enabled: boolean;
+  tailscale_enabled: boolean;
+  endpoint_url: string;
+}
+
+export interface CLITool {
+  id: string;
+  name: string;
+  dialect: string;
+  instructions: string;
+  snippet: string;
+}
+
+export interface CLIToolsResponse {
+  base_url: string;
+  model: string;
+  tools: CLITool[];
+}
+
 export interface AuthStatus {
   authenticated: boolean;
   using_default: boolean;
@@ -181,10 +293,36 @@ export const api = {
   deleteBudget: (id: string) => request<void>("DELETE", `/budgets/${id}`),
 
   usage: (period: string) => request<UsageSummary>("GET", `/usage?period=${period}`),
+  usageInsights: (period: string) =>
+    request<UsageInsights>("GET", `/usage/insights?period=${period}`),
+
+  quota: (period: string) =>
+    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}`),
+
+  consoleLog: () => request<{ entries: ConsoleEntry[] }>("GET", "/console"),
+
+  cliTools: (model?: string) =>
+    request<CLIToolsResponse>("GET", model ? `/cli-tools?model=${encodeURIComponent(model)}` : "/cli-tools"),
+
+  listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
+  createProxyPool: (input: { name: string; proxies: string[]; enabled?: boolean }) =>
+    request<ProxyPool>("POST", "/proxy-pools", input),
+  deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${id}`),
+
+  listSkills: () => request<{ skills: Skill[] }>("GET", "/skills"),
+  createSkill: (input: { name: string; description?: string; prompt?: string; enabled?: boolean }) =>
+    request<Skill>("POST", "/skills", input),
+  updateSkill: (id: string, patch: { enabled?: boolean }) =>
+    request<void>("POST", `/skills/${id}`, patch),
+  deleteSkill: (id: string) => request<void>("DELETE", `/skills/${id}`),
 
   endpointSettings: () => request<EndpointSettings>("GET", "/settings/endpoint"),
   updateEndpointSettings: (patch: Partial<EndpointSettings>) =>
     request<EndpointSettings>("POST", "/settings/endpoint", patch),
+
+  accessSettings: () => request<AccessSettings>("GET", "/settings/access"),
+  updateAccessSettings: (patch: Partial<Omit<AccessSettings, "endpoint_url">>) =>
+    request<AccessSettings>("POST", "/settings/access", patch),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),
@@ -198,6 +336,18 @@ export const api = {
     request<DeviceCode>("POST", `/oauth/${provider}/device-code`, {}),
   oauthPoll: (provider: string, deviceCode: string, label?: string) =>
     request<OAuthPollResult>("POST", `/oauth/${provider}/poll`, { device_code: deviceCode, label }),
+
+  // Kiro connect flow (AWS SSO OIDC device flows + import token). Mounted under
+  // /kiro (not /oauth/kiro) to avoid the chi /oauth/{provider} route collision.
+  kiroDeviceStart: (input: { method: "builder-id" | "idc"; start_url?: string; region?: string }) =>
+    request<DeviceCode>("POST", "/kiro/device-start", input),
+  kiroDevicePoll: (deviceCode: string, label?: string) =>
+    request<OAuthPollResult>("POST", "/kiro/device-poll", { device_code: deviceCode, label }),
+  kiroImport: (refreshToken: string, label?: string) =>
+    request<{ id: string; provider: string }>("POST", "/kiro/import", {
+      refresh_token: refreshToken,
+      label,
+    }),
 };
 
 export { APIError };

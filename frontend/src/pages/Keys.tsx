@@ -3,10 +3,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Copy, Check } from "lucide-react";
 import { api, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
+import { useToast } from "../components/Toast";
 import { Card, SectionHeader, CardHeader, Button, Input, Field, Badge, Spinner, EmptyState } from "../components/ui";
 
 export function KeysPage() {
   const qc = useQueryClient();
+  const toast = useToast();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
 
   const [name, setName] = useState("");
@@ -19,12 +21,18 @@ export function KeysPage() {
       qc.invalidateQueries({ queryKey: ["keys"] });
       setCreated(data);
       setName("");
+      toast.success("API key created", "Copy it now — it won't be shown again.");
     },
+    onError: (e: Error) => toast.error("Couldn't create key", e.message),
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteKey(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["keys"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["keys"] });
+      toast.success("Key revoked");
+    },
+    onError: (e: Error) => toast.error("Couldn't revoke key", e.message),
   });
 
   return (

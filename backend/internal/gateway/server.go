@@ -120,6 +120,9 @@ func (s *Server) routes() chi.Router {
 		r.Post("/v1/chat/completions", s.handleOpenAIChat)
 		r.Post("/v1/messages", s.handleAnthropicMessages)
 
+		// OpenAI Responses API surface (Codex and Responses-native clients).
+		r.Post("/v1/responses", s.handleOpenAIResponses)
+
 		// Gemini-native generateContent endpoint. The model + action are in the
 		// URL path ({model}:generateContent), matching Google's SDK clients.
 		r.Post("/v1beta/models/{modelAction}", s.handleGeminiGenerate)

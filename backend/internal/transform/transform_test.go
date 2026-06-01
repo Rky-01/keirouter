@@ -243,6 +243,15 @@ func TestRegistry_ResolvesCodecs(t *testing.T) {
 	_, err = reg.Codec(core.DialectGemini)
 	require.NoError(t, err, "gemini codec is registered")
 
+	_, err = reg.StreamCodec(core.DialectGemini)
+	require.NoError(t, err, "gemini codec supports streaming")
+
 	_, err = reg.Codec(core.DialectOllama)
+	require.NoError(t, err, "ollama codec is registered")
+
+	_, err = reg.StreamCodec(core.DialectOllama)
+	require.NoError(t, err, "ollama codec supports streaming")
+
+	_, err = reg.Codec(core.DialectCursor)
 	require.Error(t, err, "unregistered dialect must error")
 }

@@ -24,6 +24,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	s.handleChat(w, r, core.DialectAnthropic)
 }
 
+// handleOpenAIResponses serves /v1/responses in the OpenAI Responses dialect
+// (Codex and Responses-native clients).
+func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
+	s.handleChat(w, r, core.DialectOpenAIResponses)
+}
+
 // handleChat is the shared chat handler parameterized by the client dialect.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core.Dialect) {
 	key, _ := authedKey(r.Context())
