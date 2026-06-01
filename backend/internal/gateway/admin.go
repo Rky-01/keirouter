@@ -63,7 +63,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	s.mountOAuth(r)
 	s.mountKiro(r)
 
-	r.Get("/cli-tools", s.handleCLITools)
+	s.mountCLITools(r)
 }
 
 const adminTenant = store.DefaultTenantID

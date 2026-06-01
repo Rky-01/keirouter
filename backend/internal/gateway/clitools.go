@@ -3,62 +3,63 @@ package gateway
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/go-chi/chi/v5"
 )
 
-// cliTool describes how to point a coding tool at KeiRouter. Snippets are
-// generated against the running server's address so they are copy-paste ready.
-type cliTool struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Dialect  string `json:"dialect"` // openai | anthropic
-	Instruct string `json:"instructions"`
-	Snippet  string `json:"snippet"`
+// handleCLITools returns the status of all supported CLI tools.
+func (s *Server) handleCLITools(w http.ResponseWriter, r *http.Request) {
+	statuses := s.cliTools.DetectAll(s.cliToolHome)
+	writeJSON(w, http.StatusOK, map[string]any{"tools": statuses})
 }
 
-// handleCLITools returns config snippets for supported coding tools, wired to
-// this server's base URL. The caller supplies the model (provider/model or
-// chain:name) to embed.
-func (s *Server) handleCLITools(w http.ResponseWriter, r *http.Request) {
-	model := r.URL.Query().Get("model")
-	if model == "" {
-		model = "openai/gpt-4o"
-	}
-	base := s.publicBaseURL(r)
-
-	tools := []cliTool{
-		{
-			ID: "openai-sdk", Name: "OpenAI SDK / generic", Dialect: "openai",
-			Instruct: "Set the base URL and API key for any OpenAI-compatible client.",
-			Snippet: fmt.Sprintf("export OPENAI_BASE_URL=%s/v1\nexport OPENAI_API_KEY=<your kr_ key>\n# model: %s",
-				base, model),
-		},
-		{
-			ID: "claude-code", Name: "Claude Code", Dialect: "anthropic",
-			Instruct: "Point Claude Code at KeiRouter's Anthropic-compatible endpoint.",
-			Snippet: fmt.Sprintf("export ANTHROPIC_BASE_URL=%s\nexport ANTHROPIC_API_KEY=<your kr_ key>\n# model: %s",
-				base, model),
-		},
-		{
-			ID: "cursor", Name: "Cursor", Dialect: "openai",
-			Instruct: "Cursor → Settings → Models → Override OpenAI Base URL.",
-			Snippet: fmt.Sprintf("Base URL: %s/v1\nAPI Key:  <your kr_ key>\nModel:    %s",
-				base, model),
-		},
-		{
-			ID: "codex", Name: "Codex CLI", Dialect: "openai",
-			Instruct: "Export the OpenAI-compatible variables before running codex.",
-			Snippet: fmt.Sprintf("export OPENAI_BASE_URL=%s\nexport OPENAI_API_KEY=<your kr_ key>",
-				base),
-		},
-		{
-			ID: "cline", Name: "Cline / Roo", Dialect: "openai",
-			Instruct: "Choose the OpenAI Compatible provider in settings.",
-			Snippet: fmt.Sprintf("Base URL: %s/v1\nAPI Key:  <your kr_ key>\nModel ID: %s",
-				base, model),
-		},
+// handleCLIToolConfigure writes KeiRouter config into a specific tool.
+func (s *Server) handleCLIToolConfigure(w http.ResponseWriter, r *http.Request) {
+	toolID := chi.URLParam(r, "toolId")
+	tool := s.cliTools.Get(toolID)
+	if tool == nil {
+		writeError(w, http.StatusNotFound, "unknown tool: "+toolID)
+		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"base_url": base, "model": model, "tools": tools})
+	var body struct {
+		BaseURL string   `json:"base_url"`
+		APIKey  string   `json:"api_key"`
+		Models  []string `json:"models"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, "base_url is required")
+		return
+	}
+	if body.APIKey == "" {
+		writeError(w, http.StatusBadRequest, "api_key is required")
+		return
+	}
+
+	if err := tool.Configure(s.cliToolHome, body.BaseURL, body.APIKey, body.Models); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleCLIToolRemove strips KeiRouter config from a specific tool.
+func (s *Server) handleCLIToolRemove(w http.ResponseWriter, r *http.Request) {
+	toolID := chi.URLParam(r, "toolId")
+	tool := s.cliTools.Get(toolID)
+	if tool == nil {
+		writeError(w, http.StatusNotFound, "unknown tool: "+toolID)
+		return
+	}
+
+	if err := tool.Remove(s.cliToolHome); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // publicBaseURL derives the externally usable base URL from the request. It
@@ -79,4 +80,11 @@ func (s *Server) publicBaseURL(r *http.Request) string {
 		host = s.cfg.Addr()
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+// mountCLITools registers the CLI tool auto-config endpoints.
+func (s *Server) mountCLITools(r chi.Router) {
+	r.Get("/cli-tools", s.handleCLITools)
+	r.Post("/cli-tools/{toolId}/configure", s.handleCLIToolConfigure)
+	r.Post("/cli-tools/{toolId}/remove", s.handleCLIToolRemove)
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -15,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/mydisha/keirouter/backend/internal/auth"
+	"github.com/mydisha/keirouter/backend/internal/clitools"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
@@ -41,6 +43,8 @@ type Server struct {
 	vault    *vault.Vault
 	codecs   *transform.Registry
 	metrics  *observ.Metrics
+	cliTools *clitools.Registry
+	cliToolHome string
 	oauthSessions *oauth.SessionStore
 	router   chi.Router
 }
@@ -61,6 +65,8 @@ type Deps struct {
 	Vault    *vault.Vault
 	Codecs   *transform.Registry
 	Metrics  *observ.Metrics
+	CLITools *clitools.Registry
+	CLITHome string
 }
 
 // New builds a gateway Server and wires its routes.
@@ -68,6 +74,14 @@ func New(d Deps) *Server {
 	log := d.Logger
 	if log == nil {
 		log = slog.Default()
+	}
+	cliTools := d.CLITools
+	if cliTools == nil {
+		cliTools = clitools.NewRegistry()
+	}
+	cliToolHome := d.CLITHome
+	if cliToolHome == "" {
+		cliToolHome, _ = os.UserHomeDir()
 	}
 	s := &Server{
 		cfg:      d.Config,
@@ -84,6 +98,8 @@ func New(d Deps) *Server {
 		vault:    d.Vault,
 		codecs:   d.Codecs,
 		metrics:  d.Metrics,
+		cliTools: cliTools,
+		cliToolHome: cliToolHome,
 		oauthSessions: oauth.NewSessionStore(),
 	}
 	s.router = s.routes()
