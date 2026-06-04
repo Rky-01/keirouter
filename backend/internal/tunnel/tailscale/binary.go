@@ -307,6 +307,51 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// HasBrew returns true if Homebrew is available on the system.
+func HasBrew() bool {
+	_, err := exec.LookPath("brew")
+	return err == nil
+}
+
+// ValidateSudoPassword checks whether the given password is a valid sudo
+// credential by running `sudo -S true`. Returns nil on success, error on
+// wrong password or other sudo failure.
+func ValidateSudoPassword(sudoPassword string) error {
+	if sudoPassword == "" {
+		return fmt.Errorf("sudo password is required")
+	}
+	if strings.Contains(sudoPassword, "\n") {
+		return fmt.Errorf("invalid sudo password")
+	}
+
+	cmd := exec.Command("sudo", "-S", "true")
+	stdin, _ := cmd.StdinPipe()
+	stderr, _ := cmd.StderrPipe()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("sudo not available: %w", err)
+	}
+
+	fmt.Fprintf(stdin, "%s\n", sudoPassword)
+	stdin.Close()
+
+	var stderrBuf strings.Builder
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			stderrBuf.WriteString(scanner.Text() + "\n")
+		}
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		errOut := stderrBuf.String()
+		if strings.Contains(errOut, "incorrect password") || strings.Contains(errOut, "Sorry") {
+			return fmt.Errorf("wrong sudo password")
+		}
+		return fmt.Errorf("sudo validation failed: %s", strings.TrimSpace(errOut))
+	}
+	return nil
+}
+
 // EnsureUserOwnedDir reclaims ownership of dir if a previous root daemon left
 // files behind. Best-effort, non-fatal.
 func EnsureUserOwnedDir(dir string) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/tunnel/cloudflare"
@@ -130,6 +131,17 @@ func (s *Server) adminTailscaleInstall(w http.ResponseWriter, r *http.Request) {
 
 	onProgress := func(msg string) {
 		sendEvent("progress", map[string]string{"message": msg})
+	}
+
+	// Validate sudo password before install for paths that require it
+	// (Linux, macOS without brew). macOS+brew doesn't need sudo for install
+	// but still needs it for TUN daemon later.
+	needsSudoForInstall := !tailscale.HasBrew() || runtime.GOOS != "darwin"
+	if needsSudoForInstall {
+		if err := tailscale.ValidateSudoPassword(body.SudoPassword); err != nil {
+			sendEvent("error", map[string]string{"error": fmt.Sprintf("sudo password validation failed: %s", err.Error())})
+			return
+		}
 	}
 
 	err := tailscale.InstallTailscale(s.dataDir, body.SudoPassword, onProgress)

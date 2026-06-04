@@ -315,9 +315,16 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 				acc := attempt
 				started := time.Now()
 				saveCopy := save
+				capturedTTFT := ttft
 				usageFunc := func() {
 					usage := extractUsageFromStream(capture.Bytes())
-					p.recordWithTTFT(ctx, meta, acc, usage, false, time.Since(started), 0, saveCopy)
+					// Use TTFT as latency (time until LLM starts responding),
+					// not total stream duration.
+					effectiveLatency := capturedTTFT
+					if effectiveLatency <= 0 {
+						effectiveLatency = time.Since(started)
+					}
+					p.recordWithTTFT(ctx, meta, acc, usage, false, effectiveLatency, capturedTTFT, saveCopy)
 				}
 				return &StreamResult{
 					DirectBody:      wrapped,
@@ -431,7 +438,13 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 		case chunk, ok := <-in:
 			if !ok {
 				// Upstream closed — stream complete.
-				p.recordWithTTFT(ctx, meta, attempt, usage, false, time.Since(started), *ttft, save)
+				// Use TTFT as latency (time until LLM starts responding),
+				// not total stream duration which can be 10-30x larger.
+				effectiveLatency := *ttft
+				if effectiveLatency <= 0 {
+					effectiveLatency = time.Since(started)
+				}
+				p.recordWithTTFT(ctx, meta, attempt, usage, false, effectiveLatency, *ttft, save)
 				return
 			}
 			resetStall()
@@ -462,7 +475,11 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 			// Drain upstream.
 			for range in {
 			}
-			p.recordWithTTFT(ctx, meta, attempt, usage, false, time.Since(started), *ttft, save)
+			effectiveLatency := *ttft
+			if effectiveLatency <= 0 {
+				effectiveLatency = time.Since(started)
+			}
+			p.recordWithTTFT(ctx, meta, attempt, usage, false, effectiveLatency, *ttft, save)
 			return
 		}
 	}

@@ -61,16 +61,31 @@ type CheckResult struct {
 	Platform        string `json:"platform"`
 	DaemonRunning   bool   `json:"daemonRunning"`
 	HasSudoPassword bool   `json:"hasCachedPassword"`
+	BrewAvailable   bool   `json:"brewAvailable"`
+}
+
+// NeedSudoPassword returns true if the platform/install method requires a sudo
+// password for TUN daemon mode. macOS with brew can install without sudo, but
+// still needs sudo for TUN daemon.
+func (m *Manager) NeedSudoPassword() bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	// macOS with brew: install doesn't need sudo, but TUN daemon still does.
+	// We still require password for proper TUN funnel support.
+	return true
 }
 
 // Enable starts the Tailscale funnel. The flow mirrors 9router:
-// 1. Start daemon with sudo password
-// 2. Check login → if not logged in, return needsLogin + authUrl
-// 3. Stop existing funnel
-// 4. Start funnel → get *.ts.net URL
-// 5. If funnelNotEnabled, return enableUrl
-// 6. Provision TLS cert
-// 7. Wait for health (non-fatal timeout)
+// 1. Validate sudo password (if TUN mode needed)
+// 2. Install tailscale if not installed (brew/pkg/none)
+// 3. Start daemon with sudo password
+// 4. Check login → if not logged in, return needsLogin + authUrl
+// 5. Stop existing funnel
+// 6. Start funnel → get *.ts.net URL
+// 7. If funnelNotEnabled, return enableUrl
+// 8. Provision TLS cert
+// 9. Wait for health (non-fatal timeout)
 func (m *Manager) Enable(sudoPassword string, settingsUpdate func(tunnelURL string)) (*EnableResult, error) {
 	m.mu.Lock()
 	if m.spawnInProgress {
@@ -89,6 +104,33 @@ func (m *Manager) Enable(sudoPassword string, settingsUpdate func(tunnelURL stri
 	}()
 
 	m.log.Info("[Tailscale] enable start", "port", m.localPort)
+
+	// Validate sudo password up-front so we fail fast with a clear error
+	// instead of silently proceeding when the password is wrong.
+	// macOS+brew can install without sudo, but TUN daemon still needs it.
+	if sudoPassword != "" {
+		if err := ValidateSudoPassword(sudoPassword); err != nil {
+			m.log.Error("[Tailscale] sudo password validation failed", "error", err)
+			return &EnableResult{
+				Success: false,
+				Error:   fmt.Sprintf("sudo password validation failed: %s", err.Error()),
+			}, nil
+		}
+	}
+
+	// Install tailscale if not already installed.
+	if !IsInstalled(m.dataDir) {
+		m.log.Info("[Tailscale] not installed, installing...")
+		if err := InstallTailscale(m.dataDir, sudoPassword, func(msg string) {
+			m.log.Info("[Tailscale] install", "msg", msg)
+		}); err != nil {
+			m.log.Error("[Tailscale] install failed", "error", err)
+			return &EnableResult{
+				Success: false,
+				Error:   fmt.Sprintf("tailscale install failed: %s", err.Error()),
+			}, nil
+		}
+	}
 
 	// Start daemon.
 	if err := StartDaemon(m.dataDir, sudoPassword, m.log); err != nil {
@@ -275,6 +317,7 @@ func (m *Manager) Check(sudoPassword string) CheckResult {
 		Platform:        runtime.GOOS,
 		DaemonRunning:   daemonRunning,
 		HasSudoPassword: sudoPassword != "",
+		BrewAvailable:   runtime.GOOS == "darwin" && HasBrew(),
 	}
 }
 

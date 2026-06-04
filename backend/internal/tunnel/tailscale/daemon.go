@@ -74,6 +74,12 @@ func StartDaemon(dataDir string, sudoPassword string, log *slog.Logger) error {
 	}
 
 	if wantTun {
+		// Validate sudo password before spawning detached daemon.
+		// Without this, a wrong password silently fails and the daemon never starts.
+		if err := ValidateSudoPassword(sudoPassword); err != nil {
+			return fmt.Errorf("cannot start TUN daemon: %w", err)
+		}
+
 		// TUN mode: spawn via sudo with password via stdin.
 		sudoArgs := append([]string{"-S", tailscaledBin}, daemonArgs...)
 		cmd := exec.Command("sudo", sudoArgs...)
