@@ -12,10 +12,11 @@ import {
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell,
 } from "recharts";
-import { api, connectUsageStream, type ProviderUsage, type RecentActivity, type SeriesPoint, type ModelUsage, type TokenSavings } from "../lib/api";
+import { api, connectUsageStream, type ProviderUsage, type RecentActivity, type SeriesPoint, type ModelUsage, type TokenSavings, type UsageInsights } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, Spinner, ErrorCard } from "../components/ui";
 import { useToast } from "../components/Toast";
+import { SavingsCardShareButton } from "../components/SavingsCard";
 
 const periods = [
   { value: "today", label: "Today" },
@@ -83,12 +84,12 @@ export function UsagePage() {
 
       {insights.isLoading ? <Spinner />
         : insights.isError ? <ErrorCard message="Failed to load usage. Is the backend running?" />
-        : insights.data ? <UsageContent data={insights.data} models={modelUsage.data?.models ?? []} /> : null}
+        : insights.data ? <UsageContent data={insights.data} models={modelUsage.data?.models ?? []} period={period} /> : null}
     </>
   );
 }
 
-function UsageContent({ data, models }: { data: any; models: ModelUsage[] }) {
+function UsageContent({ data, models, period }: { data: any; models: ModelUsage[]; period: string }) {
   const { summary, savings, providers, recent, series } = data;
   const activeProviders = providers.filter((p: ProviderUsage) => p.share_pct > 0);
 
@@ -107,7 +108,7 @@ function UsageContent({ data, models }: { data: any; models: ModelUsage[] }) {
               <Clock className="h-4 w-4 text-[var(--text-muted)]" />
               <div>
                 <p className="text-[10px] font-bold tracking-wider text-[var(--text-muted)]">ROUTING EFFICIENCY</p>
-                <p className="text-sm font-semibold">{summary.total_requests > 0 && summary.cache_hits != null ? `${((summary.cache_hits / summary.total_requests) * 100).toFixed(1)}%` : "—"}</p>
+                <p className="text-sm font-semibold">{summary.avg_latency_ms > 0 ? `${summary.avg_latency_ms}ms` : summary.total_requests > 0 ? "<1ms" : "—"}</p>
               </div>
             </div>
             <TrendingUp className="h-4 w-4 text-emerald-500 opacity-60" />
@@ -206,7 +207,7 @@ function UsageContent({ data, models }: { data: any; models: ModelUsage[] }) {
 
       {/* Token Savings breakdown */}
       {savings && savings.rules && savings.rules.length > 0 && (
-        <TokenSavingsBreakdown savings={savings} totalRequests={summary.total_requests} />
+        <TokenSavingsBreakdown savings={savings} totalRequests={summary.total_requests} insights={data} period={period} />
       )}
 
       {/* Model usage breakdown */}
@@ -296,9 +297,9 @@ function UsageInsightsCard({ data }: { data: any }) {
   const { providers, summary } = data;
   const activeProviders = providers.filter((p: any) => p.share_pct > 0);
   
-  // For Token Efficiency (Output / Input)
-  const tokenEfficiency = summary.prompt_tokens > 0 
-    ? (summary.completion_tokens / summary.prompt_tokens) * 100
+  // For Token Efficiency (Output / Input ratio)
+  const tokenRatio = summary.prompt_tokens > 0 
+    ? summary.completion_tokens / summary.prompt_tokens
     : 0;
 
   return (
@@ -358,15 +359,13 @@ function UsageInsightsCard({ data }: { data: any }) {
               <div>
                 <p className="text-[10px] text-[var(--text-muted)] mb-1">Output / Input</p>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tabular-nums leading-none">{tokenEfficiency.toFixed(2)}%</span>
+                  <span className="text-2xl font-bold tabular-nums leading-none">{tokenRatio.toFixed(2)}x</span>
                 </div>
-                <p className="text-xs text-emerald-500 font-medium mt-1">Efficient</p>
-              </div>
-              <div className="h-10 w-24 opacity-60">
-                 {/* simple dummy sparkline */}
-                 <svg viewBox="0 0 100 30" className="w-full h-full overflow-visible">
-                   <path d="M0 25 L20 20 L40 22 L60 10 L80 12 L100 2" fill="none" stroke="var(--color-success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                 </svg>
+                {summary.prompt_tokens > 0 && (
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    {fmtNum(summary.completion_tokens)} out / {fmtNum(summary.prompt_tokens)} in
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -672,7 +671,7 @@ function ProviderIcon({ provider, color }: { provider: string; color: string }) 
 
 // ─── Token Savings Breakdown ────────────────────────────────────────────────
 
-function TokenSavingsBreakdown({ savings, totalRequests }: { savings: TokenSavings; totalRequests: number }) {
+function TokenSavingsBreakdown({ savings, totalRequests, insights, period }: { savings: TokenSavings; totalRequests: number; insights: UsageInsights; period: string }) {
   const maxBytes = Math.max(...savings.rules.map((r) => r.bytes_saved), 1);
   const totalCavemanPct = totalRequests > 0 ? ((savings.caveman_requests / totalRequests) * 100).toFixed(1) : "0";
   const totalTersePct = totalRequests > 0 ? ((savings.terse_requests / totalRequests) * 100).toFixed(0) : "0";
@@ -684,7 +683,9 @@ function TokenSavingsBreakdown({ savings, totalRequests }: { savings: TokenSavin
           <Scissors className="h-4 w-4 text-[var(--text-muted)]" />
           <h3 className="text-sm font-semibold">Token Savings Breakdown</h3>
         </div>
-        <div className="flex items-center gap-3 text-[11px] font-medium text-[var(--text-muted)]">
+        <div className="flex items-center gap-3">
+          <SavingsCardShareButton insights={insights} period={period} />
+          <div className="flex items-center gap-3 text-[11px] font-medium text-[var(--text-muted)]">
           {savings.caveman_requests > 0 && (
             <span className="flex items-center gap-1">
               <span className="h-1.5 w-1.5 rounded-full bg-purple-500" />
@@ -697,6 +698,7 @@ function TokenSavingsBreakdown({ savings, totalRequests }: { savings: TokenSavin
               Terse {totalTersePct}%
             </span>
           )}
+          </div>
         </div>
       </div>
       <div className="p-4">
