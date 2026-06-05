@@ -1,27 +1,27 @@
-# Auto-updated by release.yml on tag v0.1.5. Do not edit manually.
+# Auto-updated by release.yml on tag v0.1.6. Do not edit manually.
 class Keirouter < Formula
   desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
   homepage "https://github.com/mydisha/keirouter"
-  version "0.1.5"
+  version "0.1.6"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.5/keirouter_v0.1.5_darwin_arm64.tar.gz"
-      sha256 "b6e9c5a0214038b0d02e5b57d8afc676ec13428e4eb2ce3e410233d65babc1d3"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.6/keirouter_v0.1.6_darwin_arm64.tar.gz"
+      sha256 "545190271dbe1f6e6810a5590cdf7e23c423d35220b662c06f738f866e65a28e"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.5/keirouter_v0.1.5_darwin_amd64.tar.gz"
-      sha256 "d9e87fb8646f1d1d26a77a43c5523f555fc061d1482c6433b4afbae9b9cc47bf"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.6/keirouter_v0.1.6_darwin_amd64.tar.gz"
+      sha256 "d1ea34d02824cdfd23682aad6de6bca2d2e121e6a2211cc8cb1326b5181dd42a"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.5/keirouter_v0.1.5_linux_arm64.tar.gz"
-      sha256 "7e85334ef0786f3ed7d23a3d3b113f354b1a4bedfeb720ce3d7fa2c8f7db0e38"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.6/keirouter_v0.1.6_linux_arm64.tar.gz"
+      sha256 "2371884c4d6a263ae6754e4d1a1b600b7f2821a0e5422d37b10102b291dbf42d"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.5/keirouter_v0.1.5_linux_amd64.tar.gz"
-      sha256 "a0174c3dcba8e76a2a5836d8d512af5e3e98d4a5e22710bf0ebdfe3f19f5cdbc"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.6/keirouter_v0.1.6_linux_amd64.tar.gz"
+      sha256 "c1d2984f2c9b98b166e7d9c7c48b23d3275acbfda493fa8ab7b0db23f941061e"
     end
   end
 
