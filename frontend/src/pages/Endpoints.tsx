@@ -150,7 +150,30 @@ function TunnelSection() {
       />
       <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
         <CloudflareTunnel />
-        <TailscaleTunnel />
+        {/* Tailscale — temporarily disabled, under active development */}
+        <TunnelRow
+          name="Tailscale"
+          description="Private network with HTTPS"
+          logo={<TailscaleLogo className="h-5 w-5 text-[#2255CC]/40 dark:text-[#5990FF]/40" />}
+          brandColor="bg-[#2255CC]/5 dark:bg-[#5990FF]/5"
+          loading={false}
+          isRunning={false}
+          displayUrl=""
+          reachable={null}
+          actionsDisabled
+          onEnable={() => {}}
+          onDisable={() => {}}
+        >
+          <div className="flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-500/5 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+            </span>
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+              Under development — this feature is being built and will be available soon.
+            </p>
+          </div>
+        </TunnelRow>
       </div>
     </Card>
   );
@@ -516,6 +539,7 @@ function TunnelRow({
   onDisable,
   enablePending,
   disablePending,
+  actionsDisabled,
   children,
 }: {
   name: string;
@@ -531,6 +555,7 @@ function TunnelRow({
   onDisable: () => void;
   enablePending: boolean;
   disablePending: boolean;
+  actionsDisabled?: boolean;
   children?: React.ReactNode;
 }) {
   return (
@@ -565,11 +590,11 @@ function TunnelRow({
         </div>
         <div className="flex shrink-0 items-center pl-2">
           {isRunning ? (
-            <Button variant="danger" onClick={onDisable} disabled={disablePending}>
+            <Button variant="danger" onClick={onDisable} disabled={actionsDisabled || disablePending}>
               {disablePending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Disable"}
             </Button>
           ) : (
-            <Button onClick={onEnable} disabled={loading || enablePending}>
+            <Button onClick={onEnable} disabled={actionsDisabled || loading || enablePending} className={actionsDisabled ? "opacity-50 cursor-not-allowed" : ""}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enable"}
             </Button>
           )}

@@ -860,13 +860,13 @@ function ChainModal({ chain, providers, onClose }: {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-2 border-t border-[var(--border)] px-6 py-4">
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={() => (isEdit ? update.mutate() : create.mutate())}
             disabled={!valid || create.isPending || update.isPending}>
             {(create.isPending || update.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
             {isEdit ? "Save changes" : "Create chain"}
           </Button>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
         </div>
       </div>
     </div>
