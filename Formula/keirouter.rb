@@ -1,34 +1,35 @@
+# This file is auto-updated by .github/workflows/release.yml on each tag.
+# Manual edits will be overwritten on next release.
+# Template: see the "Update Homebrew formula" step in release.yml.
+
 class Keirouter < Formula
   desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
   homepage "https://github.com/mydisha/keirouter"
-  version "0.1.0"
+  version "__VERSION__"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v#{version}/keirouter_v#{version}_darwin_arm64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+      url "https://github.com/mydisha/keirouter/releases/download/v__VERSION__/keirouter_v__VERSION___darwin_arm64.tar.gz"
+      sha256 "__SHA256_DARWIN_ARM64__"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v#{version}/keirouter_v#{version}_darwin_amd64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+      url "https://github.com/mydisha/keirouter/releases/download/v__VERSION__/keirouter_v__VERSION___darwin_amd64.tar.gz"
+      sha256 "__SHA256_DARWIN_AMD64__"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v#{version}/keirouter_v#{version}_linux_arm64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+      url "https://github.com/mydisha/keirouter/releases/download/v__VERSION__/keirouter_v__VERSION___linux_arm64.tar.gz"
+      sha256 "__SHA256_LINUX_ARM64__"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v#{version}/keirouter_v#{version}_linux_amd64.tar.gz"
-      sha256 "REPLACE_WITH_ACTUAL_SHA256"
+      url "https://github.com/mydisha/keirouter/releases/download/v__VERSION__/keirouter_v__VERSION___linux_amd64.tar.gz"
+      sha256 "__SHA256_LINUX_AMD64__"
     end
   end
 
   def install
     bin.install "keirouter"
-    # Dashboard assets live next to the binary in share/.
-    # resolveFrontendDir() checks ../share/keirouter/frontend/dist
-    # relative to the executable, which matches this layout.
     share.install "frontend" => "keirouter/frontend"
   end
 

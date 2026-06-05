@@ -59,9 +59,9 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           ARCHIVE="keirouter_${VERSION}_${MATRIX_GOOS}_${MATRIX_GOARCH}.tar.gz"
-          mkdir -p dist/keirouter
+          mkdir -p dist/keirouter/frontend
           cp keirouter dist/keirouter/
-          cp -R frontend/dist dist/keirouter/frontend/dist
+          cp -R frontend/dist dist/keirouter/frontend/
           tar -czf "${ARCHIVE}" -C dist keirouter
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
         env:
@@ -102,34 +102,67 @@ jobs:
             artifacts/checksums.txt
 
       - name: Update Homebrew formula
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
+          VER="${GITHUB_REF#refs/tags/v}"
 
-          # Read checksums
           DARWIN_ARM64=$(grep "darwin_arm64" artifacts/checksums.txt | awk '{print $1}')
           DARWIN_AMD64=$(grep "darwin_amd64" artifacts/checksums.txt | awk '{print $1}')
           LINUX_ARM64=$(grep "linux_arm64" artifacts/checksums.txt | awk '{print $1}')
           LINUX_AMD64=$(grep "linux_amd64" artifacts/checksums.txt | awk '{print $1}')
 
-          # Update version
-          sed -i "s|version \".*\"|version \"${VERSION#v}\"|" Formula/keirouter.rb
+          cat > Formula/keirouter.rb <<EOF
+          # Auto-updated by release.yml on tag v${VER}. Do not edit manually.
+          class Keirouter < Formula
+            desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
+            homepage "https://github.com/mydisha/keirouter"
+            version "${VER}"
+            license "MIT"
 
-          # Update checksums (arm64 first to avoid matching wrong line)
-          sed -i "s|keirouter_v.*darwin_arm64.tar.gz\"|keirouter_v${VERSION#v}_darwin_arm64.tar.gz\"|" Formula/keirouter.rb
-          sed -i "0,/REPLACE_WITH_ACTUAL_SHA256/{s|REPLACE_WITH_ACTUAL_SHA256|${DARWIN_ARM64}|}" Formula/keirouter.rb
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_darwin_arm64.tar.gz"
+                sha256 "${DARWIN_ARM64}"
+              else
+                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_darwin_amd64.tar.gz"
+                sha256 "${DARWIN_AMD64}"
+              end
+            end
 
-          sed -i "s|keirouter_v.*darwin_amd64.tar.gz\"|keirouter_v${VERSION#v}_darwin_amd64.tar.gz\"|" Formula/keirouter.rb
-          sed -i "0,/REPLACE_WITH_ACTUAL_SHA256/{s|REPLACE_WITH_ACTUAL_SHA256|${DARWIN_AMD64}|}" Formula/keirouter.rb
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_linux_arm64.tar.gz"
+                sha256 "${LINUX_ARM64}"
+              else
+                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_linux_amd64.tar.gz"
+                sha256 "${LINUX_AMD64}"
+              end
+            end
 
-          sed -i "s|keirouter_v.*linux_arm64.tar.gz\"|keirouter_v${VERSION#v}_linux_arm64.tar.gz\"|" Formula/keirouter.rb
-          sed -i "0,/REPLACE_WITH_ACTUAL_SHA256/{s|REPLACE_WITH_ACTUAL_SHA256|${LINUX_ARM64}|}" Formula/keirouter.rb
+            def install
+              bin.install "keirouter"
+              share.install "frontend" => "keirouter/frontend"
+            end
 
-          sed -i "s|keirouter_v.*linux_amd64.tar.gz\"|keirouter_v${VERSION#v}_linux_amd64.tar.gz\"|" Formula/keirouter.rb
-          sed -i "0,/REPLACE_WITH_ACTUAL_SHA256/{s|REPLACE_WITH_ACTUAL_SHA256|${LINUX_AMD64}|}" Formula/keirouter.rb
+            def caveats
+              <<~EOS
+                Quick start:
+                  keirouter -bootstrap    # create your first API key
+                  keirouter               # start server on :20180
 
-          echo "Updated Formula/keirouter.rb to ${VERSION}"
+                Dashboard: http://localhost:20180  (default password: keirouter)
+              EOS
+            end
+
+            test do
+              assert_match "KeiRouter", shell_output("\#{bin}/keirouter --help 2>&1", 2)
+            end
+          end
+          EOF
+
+          # Strip leading whitespace from heredoc (GitHub Actions indents the block)
+          sed -i 's/^          //' Formula/keirouter.rb
+
+          echo "Updated Formula/keirouter.rb for v${VER}"
           cat Formula/keirouter.rb
 
       - name: Commit updated formula
