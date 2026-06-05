@@ -30,13 +30,14 @@ export function SectionHeader({
   title: ReactNode;
   description?: string;
   icon?: LucideIcon;
-  iconTone?: "accent" | "neutral" | "danger";
+  iconTone?: "accent" | "neutral" | "danger" | "secondary";
   action?: ReactNode;
 }) {
   const toneClasses: Record<string, string> = {
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
     neutral: "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300",
     danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
+    secondary: "bg-secondary-100 text-secondary-700 dark:bg-secondary-800/40 dark:text-secondary-200",
   };
   return (
     <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4">
@@ -78,14 +79,15 @@ export function CardHeader({
 }
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "danger";
 };
 
 export function Button({ variant = "primary", className = "", ...props }: ButtonProps) {
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60";
+    "inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400/60";
   const variants = {
-    primary: "bg-accent-600 text-white hover:bg-accent-700 dark:bg-accent-500 dark:hover:bg-accent-400 shadow-sm",
+    primary: "bg-secondary-600 text-white hover:bg-secondary-700 dark:bg-secondary-500 dark:hover:bg-secondary-400 shadow-sm",
+    secondary: "bg-accent-600 text-white hover:bg-accent-700 dark:bg-accent-500 dark:hover:bg-accent-400 shadow-sm",
     ghost:
       "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)] hover:bg-ink-100 dark:hover:bg-ink-800",
     danger:
@@ -128,11 +130,12 @@ export function Badge({
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "accent" | "danger" | "success";
+  tone?: "neutral" | "accent" | "secondary" | "danger" | "success";
 }) {
   const tones = {
     neutral: "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300",
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
+    secondary: "bg-secondary-100 text-secondary-700 dark:bg-secondary-800/40 dark:text-secondary-200",
     danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
     success: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
   };
@@ -146,9 +149,10 @@ export function Badge({
 }
 
 // StatusDot is the small filled circle used next to "Healthy" / "Active" labels.
-export function StatusDot({ tone = "success", label }: { tone?: "success" | "danger" | "warning"; label?: string }) {
+export function StatusDot({ tone = "success", label }: { tone?: "success" | "danger" | "warning" | "secondary"; label?: string }) {
   const colors = {
     success: "bg-accent-500",
+    secondary: "bg-secondary-500",
     danger: "bg-[color:var(--color-danger)]",
     warning: "bg-[color:var(--color-warning)]",
   };
@@ -340,8 +344,8 @@ export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: 
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
-        checked ? "bg-accent-600" : "bg-ink-300 dark:bg-ink-700"
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400/60 ${
+        checked ? "bg-secondary-600" : "bg-ink-300 dark:bg-ink-700"
       }`}
     >
       <span

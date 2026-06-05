@@ -526,6 +526,7 @@ export const api = {
   updateKey: (id: string, patch: { disabled?: boolean; allowed_models?: string[] }) =>
     request<{ id: string; disabled?: boolean; allowed_models?: string[] }>("PATCH", `/keys/${id}`, patch),
   deleteKey: (id: string) => request<void>("DELETE", `/keys/${id}`),
+  deleteKeys: (ids: string[]) => Promise.all(ids.map((id) => request<void>("DELETE", `/keys/${id}`))),
 
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
   createAccount: (input: AccountInput) =>

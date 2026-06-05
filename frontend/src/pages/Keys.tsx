@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ArrowLeft, ArrowRight } from "lucide-react";
+import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ArrowLeft, ArrowRight, Trash2 } from "lucide-react";
 import { api, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
@@ -105,6 +105,45 @@ export function KeysPage() {
     onError: (e: Error) => toast.error("Key creation failed", e.message),
   });
 
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    if (!keys.data?.keys) return;
+    setSelectedIds((prev) => {
+      if (prev.size === keys.data!.keys!.length) return new Set();
+      return new Set(keys.data!.keys!.map((k) => k.id));
+    });
+  }, [keys.data]);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const bulkRemove = useMutation({
+    mutationFn: (ids: string[]) => api.deleteKeys(ids),
+    onSuccess: (_, ids) => {
+      qc.invalidateQueries({ queryKey: ["keys"] });
+      clearSelection();
+      toast.success(`${ids.length} key${ids.length > 1 ? "s" : ""} revoked`, "All selected keys have been permanently deleted.");
+    },
+    onError: (e: Error) => toast.error("Bulk revocation failed", e.message),
+  });
+
+  const handleBulkDelete = () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    if (!confirm(`Revoke ${ids.length} key${ids.length > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    bulkRemove.mutate(ids);
+  };
+
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteKey(id),
     onSuccess: () => {
@@ -186,16 +225,58 @@ export function KeysPage() {
       </Modal>
 
       <Card>
-        <CardHeader title="Keys" />
+        <CardHeader
+          title={selectedIds.size > 0 ? `${selectedIds.size} selected` : "Keys"}
+          action={
+            selectedIds.size > 0 ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={clearSelection}
+                  className="rounded-lg px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+                >
+                  Clear
+                </button>
+                <Button variant="danger" onClick={handleBulkDelete} disabled={bulkRemove.isPending}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Revoke {selectedIds.size}
+                </Button>
+              </div>
+            ) : undefined
+          }
+        />
         {keys.isLoading ? (
           <Spinner />
         ) : !keys.data?.keys?.length ? (
           <EmptyState title="No keys yet" />
         ) : (
           <div className="divide-y divide-[var(--border)]">
+            {/* Select all row */}
+            {keys.data.keys.length > 1 && (
+              <div className="flex items-center px-6 py-2 bg-[var(--bg-subtle)] border-b border-[var(--border)]">
+                <label className="flex items-center gap-4 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === keys.data.keys.length}
+                    onChange={toggleSelectAll}
+                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent)]"
+                  />
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                    Select all
+                  </span>
+                </label>
+              </div>
+            )}
             {keys.data.keys.map((k) => (
-              <div key={k.id} className="flex items-center justify-between px-6 py-4">
-                <div>
+              <div key={k.id} className={`flex items-center gap-4 px-6 py-4 transition-colors ${selectedIds.has(k.id) ? "bg-accent-50/40 dark:bg-accent-950/20" : ""}`}>
+                <label className="flex items-center shrink-0 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(k.id)}
+                    onChange={() => toggleSelect(k.id)}
+                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent)]"
+                  />
+                </label>
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{k.name}</span>
                     {k.disabled ? <Badge tone="danger">disabled</Badge> : <Badge tone="success">active</Badge>}
@@ -236,7 +317,7 @@ export function KeysPage() {
                     </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <Button
                     variant="ghost"
                     onClick={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}

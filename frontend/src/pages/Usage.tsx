@@ -282,7 +282,7 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
         <g transform={`translate(${routerX - 60}, ${routerY - 24})`}>
           <rect width="120" height="48" rx="24" fill="var(--bg-elevated)" stroke="var(--border)" strokeWidth="1.5" className="drop-shadow-md" />
           <circle cx="24" cy="24" r="14" fill="var(--bg-subtle)" stroke="var(--border)" strokeWidth="1" />
-          <image href="/keirouter-logo.png" x="16" y="16" width="16" height="16" />
+          <image href="/keirouter-favicon.png" x="16" y="16" width="16" height="16" />
           <text x="46" y="28" className="text-sm font-bold fill-[var(--text)] tracking-tight">Router</text>
         </g>
       </svg>

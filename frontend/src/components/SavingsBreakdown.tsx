@@ -48,9 +48,11 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
       </div>
       <div className="p-5">
         <div className="space-y-4">
-          {rules.length === 0 && !hasSavings ? (
+          {rules.length === 0 ? (
             <div className="flex items-center justify-center py-6 text-xs font-medium text-[var(--text-muted)]">
-              No optimizations active for this period
+              {!hasSavings 
+                ? "No optimizations active for this period" 
+                : "Output optimizations active (no prompt savings yet)"}
             </div>
           ) : (
             rules.map((r) => (

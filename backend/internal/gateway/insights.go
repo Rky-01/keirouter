@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -454,6 +455,16 @@ func (s *Server) adminListProxyPools(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Count accounts bound to each pool for the dashboard.
+	accs, _ := s.accounts.ListByTenant(r.Context(), adminTenant)
+	boundCounts := map[string]int{}
+	for _, a := range accs {
+		if a.ProxyPoolID != "" {
+			boundCounts[a.ProxyPoolID]++
+		}
+	}
+
 	out := make([]map[string]any, 0, len(pools))
 	for _, p := range pools {
 		out = append(out, map[string]any{
@@ -462,9 +473,14 @@ func (s *Server) adminListProxyPools(w http.ResponseWriter, r *http.Request) {
 			"strict": p.Strict, "is_active": p.IsActive,
 			"test_status": p.TestStatus, "last_tested": p.LastTested,
 			"last_error": p.LastError,
+			"bound_connection_count": boundCounts[p.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pools": out})
+}
+
+var validProxyPoolTypes = map[string]bool{
+	"http": true, "vercel": true, "cloudflare": true, "deno": true,
 }
 
 func (s *Server) adminCreateProxyPool(w http.ResponseWriter, r *http.Request) {
@@ -494,6 +510,10 @@ func (s *Server) adminCreateProxyPool(w http.ResponseWriter, r *http.Request) {
 	poolType := body.Type
 	if poolType == "" {
 		poolType = "http"
+	}
+	if !validProxyPoolTypes[poolType] {
+		writeError(w, http.StatusBadRequest, "invalid pool type: must be http, vercel, cloudflare, or deno")
+		return
 	}
 	active := true
 	if body.IsActive != nil {
@@ -559,7 +579,25 @@ func (s *Server) adminUpdateProxyPool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminDeleteProxyPool(w http.ResponseWriter, r *http.Request) {
-	if err := s.pools.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+
+	// Prevent deletion if any accounts are bound to this pool.
+	accs, _ := s.accounts.ListByTenant(r.Context(), adminTenant)
+	bound := 0
+	for _, a := range accs {
+		if a.ProxyPoolID == id {
+			bound++
+		}
+	}
+	if bound > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":                 "proxy pool is currently in use",
+			"bound_connection_count": bound,
+		})
+		return
+	}
+
+	if err := s.pools.Delete(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -572,20 +610,88 @@ func (s *Server) adminTestProxyPool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pool not found")
 		return
 	}
+
 	now := time.Now()
 	pool.LastTested = &now
 
-	// Simple connectivity test: try to reach the proxy URL.
-	// For HTTP proxies, we just verify the URL is parseable and reachable.
-	// For relay types, we'd need a real test endpoint — for now just mark active.
-	pool.TestStatus = "active"
-	pool.LastError = ""
-	pool.IsActive = true
+	result := testProxyPoolConnectivity(pool)
+
+	pool.TestStatus = result.status
+	pool.LastError = result.lastError
+	// Preserve current is_active — don't force-enable on test pass.
 	_ = s.pools.Update(r.Context(), pool)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": pool.TestStatus, "last_tested": pool.LastTested,
+		"status":      pool.TestStatus,
+		"last_tested": pool.LastTested,
+		"elapsed_ms":  result.elapsedMS,
+		"error":       result.lastError,
 	})
+}
+
+type proxyTestResult struct {
+	status    string
+	lastError string
+	elapsedMS int64
+}
+
+// testProxyPoolConnectivity performs a real connectivity check against a proxy
+// pool. For HTTP proxies it routes a GET httpbin.org/ip through the proxy; for
+// relay types (vercel/cloudflare/deno) it sends relay headers.
+func testProxyPoolConnectivity(pool store.ProxyPool) proxyTestResult {
+	timeout := 10 * time.Second
+
+	switch pool.Type {
+	case "vercel", "cloudflare", "deno":
+		return testRelayPool(pool.ProxyURL, timeout)
+	default: // "http"
+		return testHTTPPool(pool.ProxyURL, timeout)
+	}
+}
+
+func testHTTPPool(proxyURL string, timeout time.Duration) proxyTestResult {
+	start := time.Now()
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return proxyTestResult{status: "error", lastError: "invalid proxy URL: " + err.Error()}
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(parsed)}
+	client := &http.Client{Transport: transport, Timeout: timeout}
+	req, err := http.NewRequest("GET", "https://httpbin.org/ip", nil)
+	if err != nil {
+		return proxyTestResult{status: "error", lastError: err.Error()}
+	}
+	resp, err := client.Do(req)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		return proxyTestResult{status: "error", lastError: err.Error(), elapsedMS: elapsed}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return proxyTestResult{status: "error", lastError: fmt.Sprintf("proxy returned HTTP %d", resp.StatusCode), elapsedMS: elapsed}
+	}
+	return proxyTestResult{status: "active", elapsedMS: elapsed}
+}
+
+func testRelayPool(relayURL string, timeout time.Duration) proxyTestResult {
+	start := time.Now()
+	client := &http.Client{Timeout: timeout}
+	req, err := http.NewRequest("GET", relayURL, nil)
+	if err != nil {
+		return proxyTestResult{status: "error", lastError: err.Error()}
+	}
+	req.Header.Set("x-relay-target", "https://httpbin.org")
+	req.Header.Set("x-relay-path", "/get")
+	resp, err := client.Do(req)
+	elapsed := time.Since(start).Milliseconds()
+	if err != nil {
+		return proxyTestResult{status: "error", lastError: err.Error(), elapsedMS: elapsed}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return proxyTestResult{status: "error", lastError: fmt.Sprintf("relay returned HTTP %d", resp.StatusCode), elapsedMS: elapsed}
+	}
+	return proxyTestResult{status: "active", elapsedMS: elapsed}
 }
 
 // ---- skills -----------------------------------------------------------------

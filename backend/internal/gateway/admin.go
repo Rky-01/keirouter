@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1696,9 +1697,21 @@ func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF Protection: Validate proxy URL before use
+	if err := httputil.ValidateProxyURL(body.ProxyURL); err != nil {
+		s.log.Warn("blocked suspicious proxy URL in test", "url", body.ProxyURL, "error", err)
+		writeError(w, http.StatusBadRequest, "invalid proxyUrl: URL blocked by security policy")
+		return
+	}
+
 	start := time.Now()
-	// Simple connectivity test — try to reach a known endpoint through the proxy.
-	client := &http.Client{Timeout: 10 * time.Second}
+	parsed, err := url.Parse(body.ProxyURL)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: " + err.Error()})
+		return
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(parsed)}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://httpbin.org/ip", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))

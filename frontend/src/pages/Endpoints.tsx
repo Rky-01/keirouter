@@ -114,7 +114,7 @@ function PrimaryEndpoint() {
           </div>
           <button
             onClick={copy}
-            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-accent-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-700 dark:bg-accent-500 dark:hover:bg-accent-400 sm:py-3"
+            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-secondary-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-secondary-700 dark:bg-secondary-500 dark:hover:bg-secondary-400 sm:py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400/60"
           >
             {copied ? (
               <>

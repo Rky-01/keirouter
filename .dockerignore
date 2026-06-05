@@ -6,8 +6,8 @@ data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-keirouter
-keirouter.exe
+/keirouter
+/keirouter.exe
 backend/vendor/
 frontend/node_modules/
 frontend/dist/

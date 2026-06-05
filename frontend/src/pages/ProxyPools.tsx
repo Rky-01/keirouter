@@ -9,7 +9,7 @@ import { api, type ProxyPool } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import {
-  Card, Button, Input, Field, Badge, Spinner, EmptyState,
+  Card, Button, Input, Field, Badge, Spinner, EmptyState, Modal,
 } from "../components/ui";
 
 export function ProxyPoolsPage() {
@@ -283,14 +283,13 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
   const valid = name.trim() && proxyUrl.trim();
 
   return (
-    <Card>
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-        <h3 className="text-sm font-semibold">{isEdit ? "Edit Proxy Pool" : "Add Proxy Pool"}</h3>
-        <button onClick={onClose} className="rounded-lg p-1.5 text-[var(--text-muted)] hover:text-[var(--text)]">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="space-y-4 px-4 py-4">
+    <Modal
+      open
+      onClose={onClose}
+      title={isEdit ? "Edit Proxy Pool" : "Add Proxy Pool"}
+      subtitle={isEdit ? `Editing "${pool?.name}"` : "Configure a new proxy endpoint for upstream routing."}
+    >
+      <div className="space-y-4 px-6 py-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Name">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="us-east-residential" />
@@ -316,7 +315,7 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
             <span className="text-[var(--text-muted)]">— fail if proxy unreachable</span>
           </label>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 border-t border-[var(--border)] pt-4">
           <Button onClick={() => (isEdit ? update.mutate() : create.mutate())}
             disabled={!valid || create.isPending || update.isPending}>
             {(create.isPending || update.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
@@ -325,7 +324,7 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
         </div>
       </div>
-    </Card>
+    </Modal>
   );
 }
 

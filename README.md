@@ -30,7 +30,7 @@ You just point all your AI tools to one local endpoint on your machine. KeiRoute
 
 It's built with Go, which means it’s incredibly lightweight (using barely ~20MB of RAM) and starts up instantly. Plus, it comes with a beautiful dashboard to manage everything. ✨
 
-> **Status:** Active development. See the [Architecture](#-architecture-for-the-curious) section for what's implemented.
+> **Status:** Active development. See the [Architecture](#architecture) section for what's implemented.
 
 ## 🌟 Why you'll love KeiRouter
 
@@ -39,8 +39,10 @@ It's built with Go, which means it’s incredibly lightweight (using barely ~20M
 - 💸 **Save Serious Cash:** 
   - **Input Compression:** It shrinks massive logs, code diffs, and file structures before sending them to the LLM. 
   - **Output Compression:** Tell the AI to speak in "terse mode" to cut out all the yapping and just give you the code.
+- 💰 **Budget Engine:** Set per-key or per-organization USD and token hard limits with auto-cutoff to prevent unexpected bills.
+- 🛠️ **Skills System:** Enhance your LLM interactions with built-in skills (Web Search, Image Generation, Text-to-Speech, etc.) natively routed through the gateway.
 - 🔐 **Super Secure:** Your API keys are encrypted with military-grade envelope encryption (AES-256-GCM). We never store plain text keys. Your local dashboard is also protected by a secure password and HMAC session cookies.
-- 📊 **Track Everything:** Wondering where your money is going? The dashboard gives you beautiful charts showing your token usage, costs, and latency.
+- 📊 **Track Everything:** Wondering where your money is going? The beautiful dashboard gives you a detailed Quota Tracker, Provider usage breakdowns, and real-time API Key monitoring.
 - ⚡ **Lightning Fast Caching:** Ask the same question twice? The semantic cache remembers the answer and gives it back to you instantly, for exactly $0.00.
 
 <p align="center">
@@ -117,6 +119,7 @@ KeiRouter isn't just for chat! It supports everything:
 ## 🔑 Connect via OAuth (No API Keys needed!)
 Tired of copying API keys? You can connect providers like Claude, GitHub Copilot, Gemini CLI, and more directly from the Connections page using OAuth. Just click, sign in, and KeiRouter handles securely refreshing your tokens in the background!
 
+<a name="architecture"></a>
 ## 🛠️ Architecture for the curious
 Curious how it works under the hood? Here's the life of a request:
 1. **Gateway:** Receives your HTTP request and parses the AI dialect (OpenAI, Anthropic, Gemini, etc.).
