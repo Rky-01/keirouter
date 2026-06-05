@@ -163,6 +163,8 @@ function TunnelSection() {
           actionsDisabled
           onEnable={() => {}}
           onDisable={() => {}}
+          enablePending={false}
+          disablePending={false}
         >
           <div className="flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-500/5 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
             <span className="relative flex h-2 w-2">
@@ -303,7 +305,7 @@ function CloudflareTunnel() {
 // Tailscale tunnel row
 // ---------------------------------------------------------------------------
 
-function TailscaleTunnel() {
+export function TailscaleTunnel() {
   const qc = useQueryClient();
   const [loading, setLoading] = useState(false);
   const [reachable, setReachable] = useState<boolean | null>(null);
