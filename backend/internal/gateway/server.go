@@ -60,8 +60,9 @@ type Server struct {
 	oauthSessions *oauth.SessionStore
 	cfManager     *cloudflare.Manager
 	tsManager     *tailscale.Manager
-	usageHub      *usagehub.Hub
-	router        chi.Router
+	usageHub       *usagehub.Hub
+	timeoutNotifier *TimeoutNotifier
+	router         chi.Router
 }
 
 // Deps bundles the gateway's collaborators.
@@ -90,7 +91,8 @@ type Deps struct {
 	DataDir     string
 	CfManager   *cloudflare.Manager
 	TsManager   *tailscale.Manager
-	UsageHub    *usagehub.Hub
+	UsageHub       *usagehub.Hub
+	TimeoutNotifier *TimeoutNotifier
 }
 
 // New builds a gateway Server and wires its routes.
@@ -137,7 +139,8 @@ func New(d Deps) *Server {
 		oauthSessions: oauth.NewSessionStore(),
 		cfManager:     d.CfManager,
 		tsManager:     d.TsManager,
-		usageHub:      d.UsageHub,
+		usageHub:       d.UsageHub,
+		timeoutNotifier: d.TimeoutNotifier,
 	}
 	s.router = s.routes()
 	return s

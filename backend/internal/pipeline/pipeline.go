@@ -31,6 +31,13 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/terse"
 )
 
+// TimeoutReader provides dynamic timeout values that can be updated at runtime.
+type TimeoutReader interface {
+	StreamStallTimeout() time.Duration
+	ResponseHeaderTimeout() time.Duration
+	RequestTimeout() time.Duration
+}
+
 // Pipeline wires the request-processing stages together.
 type Pipeline struct {
 	dispatcher *dispatch.Dispatcher
@@ -44,6 +51,7 @@ type Pipeline struct {
 
 	requestTimeout     time.Duration // upper bound on non-streaming upstream calls
 	streamStallTimeout time.Duration // aborts a stream with no bytes for this long
+	timeoutReader      TimeoutReader // dynamic timeout source (from dashboard settings)
 }
 
 // Deps bundles the pipeline's collaborators.
@@ -62,6 +70,9 @@ type Deps struct {
 	// StreamStallTimeout aborts a stream that produces no bytes for this
 	// long. Zero means no stall detection.
 	StreamStallTimeout time.Duration
+	// TimeoutReader provides dynamic timeout values from dashboard settings.
+	// When set, it overrides RequestTimeout and StreamStallTimeout.
+	TimeoutReader TimeoutReader
 }
 
 // New builds a Pipeline.
@@ -82,7 +93,30 @@ func New(d Deps) *Pipeline {
 
 		requestTimeout:     d.RequestTimeout,
 		streamStallTimeout: d.StreamStallTimeout,
+		timeoutReader:      d.TimeoutReader,
 	}
+}
+
+// resolvedRequestTimeout returns the effective request timeout, preferring
+// the dynamic dashboard value when available.
+func (p *Pipeline) resolvedRequestTimeout() time.Duration {
+	if p.timeoutReader != nil {
+		if t := p.timeoutReader.RequestTimeout(); t > 0 {
+			return t
+		}
+	}
+	return p.requestTimeout
+}
+
+// resolvedStallTimeout returns the effective stream stall timeout, preferring
+// the dynamic dashboard value when available.
+func (p *Pipeline) resolvedStallTimeout() time.Duration {
+	if p.timeoutReader != nil {
+		if t := p.timeoutReader.StreamStallTimeout(); t > 0 {
+			return t
+		}
+	}
+	return p.streamStallTimeout
 }
 
 // Options carries per-request routing and token-saving settings resolved from
@@ -174,8 +208,8 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		// HTTP client uses the right proxy/relay for this account.
 		callCtx := core.WithProxy(ctx, attempt.Creds)
 		var cancelTimeout context.CancelFunc
-		if p.requestTimeout > 0 {
-			callCtx, cancelTimeout = context.WithTimeout(callCtx, p.requestTimeout)
+		if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
+			callCtx, cancelTimeout = context.WithTimeout(callCtx, reqTimeout)
 		}
 		resp, callErr := attempt.Conn.Chat(callCtx, attemptReq, attempt.Creds)
 		if cancelTimeout != nil {
@@ -411,10 +445,13 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time, ttft *time.Duration, save *saveState, scope budget.Scope) {
 	defer close(out)
 
+	// Resolve effective stall timeout (dynamic from dashboard or static config).
+	stallTimeout := p.resolvedStallTimeout()
+
 	// Set up stall detection. The timer resets every time a chunk arrives.
 	var stallCancel context.CancelFunc
 	stallCtx := ctx
-	if p.streamStallTimeout > 0 {
+	if stallTimeout > 0 {
 		stallCtx, stallCancel = context.WithCancel(ctx)
 		defer stallCancel()
 		// Drain upstream when stall fires.
@@ -431,13 +468,13 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 
 	var stallTimer *time.Timer
 	resetStall := func() {
-		if p.streamStallTimeout <= 0 {
+		if stallTimeout <= 0 {
 			return
 		}
 		if stallTimer == nil {
-			stallTimer = time.AfterFunc(p.streamStallTimeout, stallCancel)
+			stallTimer = time.AfterFunc(stallTimeout, stallCancel)
 		} else {
-			stallTimer.Reset(p.streamStallTimeout)
+			stallTimer.Reset(stallTimeout)
 		}
 	}
 	stopStall := func() {
@@ -489,7 +526,7 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 			stopStall()
 			out <- core.StreamChunk{
 				Type: core.ChunkError,
-				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: attempt.Target.Provider, Model: attempt.Target.Model, Message: "stream stall: no data received for " + p.streamStallTimeout.String()},
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: attempt.Target.Provider, Model: attempt.Target.Model, Message: "stream stall: no data received for " + stallTimeout.String()},
 			}
 			// Drain upstream.
 			for range in {

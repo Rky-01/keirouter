@@ -145,6 +145,14 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		MaxEntries:          10000,
 	}, cacheStore)
 
+	// Timeout notifier: atomic cache of timeout values that can be updated
+	// at runtime from the dashboard settings without restarting.
+	timeoutNotifier := gateway.NewTimeoutNotifier(
+		cfg.Server.StreamStallTimeout,
+		30*time.Second, // ResponseHeaderTimeout fallback (from transport)
+		cfg.Server.RequestTimeout,
+	)
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher:         disp,
 		Meter:              mtr,
@@ -156,6 +164,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Logger:             log,
 		RequestTimeout:     cfg.Server.RequestTimeout,
 		StreamStallTimeout: cfg.Server.StreamStallTimeout,
+		TimeoutReader:      timeoutNotifier,
 	})
 
 	// Resolve frontend dist directory. Check common install locations, then cwd.
@@ -191,7 +200,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		DataDir:     dataDir,
 		CfManager:   cfManager,
 		TsManager:   tsManager,
-		UsageHub:    uh,
+		UsageHub:       uh,
+		TimeoutNotifier: timeoutNotifier,
 	})
 
 	srv := &http.Server{

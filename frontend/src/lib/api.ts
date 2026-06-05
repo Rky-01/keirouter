@@ -43,6 +43,9 @@ export interface EndpointSettings {
   outbound_proxy_url: string;
   outbound_no_proxy: string;
   observability_enabled?: boolean;
+  stream_stall_timeout_ms: number;
+  response_header_timeout_ms: number;
+  request_timeout_ms: number;
 }
 
 export interface ProviderRoutingSettings {

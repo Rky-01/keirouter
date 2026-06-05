@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database,
+  Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
 } from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
@@ -139,6 +139,9 @@ export function SettingsPage() {
           {/* Routing Strategy */}
           <RoutingStrategy local={local} update={update} />
 
+          {/* Timeouts */}
+          <TimeoutSettings local={local} update={update} />
+
           {/* Network */}
           <NetworkSettings local={local} update={update} />
 
@@ -248,6 +251,83 @@ function RoutingStrategy({
               ? ` Chains rotate after ${local.combo_sticky_limit || 1} call${(local.combo_sticky_limit || 1) === 1 ? "" : "s"} per model.`
               : " Chains always start with their first model."}
           </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function TimeoutSettings({
+  local,
+  update,
+}: {
+  local: EndpointSettings;
+  update: (patch: Partial<EndpointSettings>) => void;
+}) {
+  return (
+    <Card>
+      <SectionHeader
+        title="Timeouts"
+        description="Fine-tune upstream connection and streaming timeouts. Increase for slow providers or reasoning models (Deepseek, GLM) that think before streaming."
+        icon={Clock}
+      />
+      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+        <div className="px-6 py-4">
+          <Field label="Connect timeout (seconds)">
+            <Input
+              type="number"
+              min={5}
+              max={300}
+              value={Math.round((local.response_header_timeout_ms || 60000) / 1000)}
+              onChange={(e) => {
+                const sec = parseInt(e.target.value) || 60;
+                update({ response_header_timeout_ms: sec * 1000 });
+              }}
+              placeholder="60"
+              className="w-24 text-center"
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Max time waiting for upstream to send response headers. Default: 60s. Increase for slow providers.
+            </p>
+          </Field>
+        </div>
+        <div className="px-6 py-4">
+          <Field label="Stream stall timeout (seconds)">
+            <Input
+              type="number"
+              min={10}
+              max={600}
+              value={Math.round((local.stream_stall_timeout_ms || 120000) / 1000)}
+              onChange={(e) => {
+                const sec = parseInt(e.target.value) || 120;
+                update({ stream_stall_timeout_ms: sec * 1000 });
+              }}
+              placeholder="120"
+              className="w-24 text-center"
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Abort stream if no data received for this long. Default: 120s. Increase for reasoning models that think before streaming.
+            </p>
+          </Field>
+        </div>
+        <div className="px-6 py-4">
+          <Field label="Request timeout (seconds)">
+            <Input
+              type="number"
+              min={30}
+              max={3600}
+              value={Math.round((local.request_timeout_ms || 300000) / 1000)}
+              onChange={(e) => {
+                const sec = parseInt(e.target.value) || 300;
+                update({ request_timeout_ms: sec * 1000 });
+              }}
+              placeholder="300"
+              className="w-24 text-center"
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Upper bound for non-streaming requests. Default: 300s (5 min).
+            </p>
+          </Field>
         </div>
       </div>
     </Card>

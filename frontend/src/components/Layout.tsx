@@ -7,6 +7,7 @@ import {
   Layers,
   Wallet,
   Sparkles,
+  Settings,
   Search,
   ChevronDown,
   LogOut,
@@ -67,7 +68,7 @@ const navGroups: NavGroup[] = [
       { to: "/usage", label: "Usage", icon: BarChart3 },
       { to: "/budgets", label: "Budgets", icon: Wallet },
       { to: "/quota", label: "Quota Tracker", icon: Clock },
-      { to: "/settings", label: "Token Saving", icon: Zap },
+      { to: "/settings", label: "Settings", icon: Settings },
     ],
   },
   {

@@ -48,6 +48,16 @@ type EndpointSettings struct {
 
 	// Observability.
 	ObservabilityEnabled *bool `json:"observability_enabled,omitempty"`
+
+	// Timeout settings (milliseconds).
+	// StreamStallTimeoutMs aborts a stream that produces no data for this long.
+	// Increase for reasoning models (Deepseek, GLM) that think before streaming.
+	StreamStallTimeoutMs int `json:"stream_stall_timeout_ms"`
+	// ResponseHeaderTimeoutMs is the max time waiting for upstream response
+	// headers. Accommodates slow providers (ollama on modest hardware).
+	ResponseHeaderTimeoutMs int `json:"response_header_timeout_ms"`
+	// RequestTimeoutMs bounds non-streaming upstream calls.
+	RequestTimeoutMs int `json:"request_timeout_ms"`
 }
 
 // defaultEndpointSettings mirrors 9router's defaults: RTK on, caveman/terse off.
@@ -65,6 +75,11 @@ func defaultEndpointSettings() EndpointSettings {
 		OutboundProxyEnabled: false,
 		OutboundProxyURL:     "",
 		OutboundNoProxy:      "",
+		// Timeout defaults (ms). Raised from 9router's aggressive 20s/30s to
+		// accommodate slow upstream providers and reasoning models.
+		StreamStallTimeoutMs:    120000, // 2 min (was 30s in 9router)
+		ResponseHeaderTimeoutMs: 60000,  // 60s (was 20s in 9router)
+		RequestTimeoutMs:        300000, // 5 min
 	}
 }
 
@@ -110,6 +125,16 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 	if es.ComboStickyLimit == 0 {
 		es.ComboStickyLimit = def.ComboStickyLimit
 	}
+	// Backfill timeout defaults for existing settings that predate this feature.
+	if es.StreamStallTimeoutMs == 0 {
+		es.StreamStallTimeoutMs = def.StreamStallTimeoutMs
+	}
+	if es.ResponseHeaderTimeoutMs == 0 {
+		es.ResponseHeaderTimeoutMs = def.ResponseHeaderTimeoutMs
+	}
+	if es.RequestTimeoutMs == 0 {
+		es.RequestTimeoutMs = def.RequestTimeoutMs
+	}
 	return es
 }
 
@@ -148,19 +173,22 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	current := s.loadEndpointSettings(r.Context())
 
 	var patch struct {
-		RTKEnabled           *bool   `json:"rtk_enabled"`
-		CavemanEnabled       *bool   `json:"caveman_enabled"`
-		CavemanLevel         *string `json:"caveman_level"`
-		TerseEnabled         *bool   `json:"terse_enabled"`
-		TerseLevel           *string `json:"terse_level"`
-		RoutingStrategy      *string `json:"routing_strategy"`
-		StickyLimit          *int    `json:"sticky_limit"`
-		ComboStrategy        *string `json:"combo_strategy"`
-		ComboStickyLimit     *int    `json:"combo_sticky_limit"`
-		OutboundProxyEnabled *bool   `json:"outbound_proxy_enabled"`
-		OutboundProxyURL     *string `json:"outbound_proxy_url"`
-		OutboundNoProxy      *string `json:"outbound_no_proxy"`
-		ObservabilityEnabled *bool   `json:"observability_enabled"`
+		RTKEnabled              *bool   `json:"rtk_enabled"`
+		CavemanEnabled          *bool   `json:"caveman_enabled"`
+		CavemanLevel            *string `json:"caveman_level"`
+		TerseEnabled            *bool   `json:"terse_enabled"`
+		TerseLevel              *string `json:"terse_level"`
+		RoutingStrategy         *string `json:"routing_strategy"`
+		StickyLimit             *int    `json:"sticky_limit"`
+		ComboStrategy           *string `json:"combo_strategy"`
+		ComboStickyLimit        *int    `json:"combo_sticky_limit"`
+		OutboundProxyEnabled    *bool   `json:"outbound_proxy_enabled"`
+		OutboundProxyURL        *string `json:"outbound_proxy_url"`
+		OutboundNoProxy         *string `json:"outbound_no_proxy"`
+		ObservabilityEnabled    *bool   `json:"observability_enabled"`
+		StreamStallTimeoutMs    *int    `json:"stream_stall_timeout_ms"`
+		ResponseHeaderTimeoutMs *int    `json:"response_header_timeout_ms"`
+		RequestTimeoutMs        *int    `json:"request_timeout_ms"`
 	}
 	if !decodeJSON(w, r, &patch) {
 		return
@@ -227,6 +255,27 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.ObservabilityEnabled != nil {
 		current.ObservabilityEnabled = patch.ObservabilityEnabled
 	}
+	if patch.StreamStallTimeoutMs != nil {
+		if *patch.StreamStallTimeoutMs < 5000 || *patch.StreamStallTimeoutMs > 600000 {
+			writeError(w, http.StatusBadRequest, "stream_stall_timeout_ms must be between 5000 and 600000")
+			return
+		}
+		current.StreamStallTimeoutMs = *patch.StreamStallTimeoutMs
+	}
+	if patch.ResponseHeaderTimeoutMs != nil {
+		if *patch.ResponseHeaderTimeoutMs < 5000 || *patch.ResponseHeaderTimeoutMs > 300000 {
+			writeError(w, http.StatusBadRequest, "response_header_timeout_ms must be between 5000 and 300000")
+			return
+		}
+		current.ResponseHeaderTimeoutMs = *patch.ResponseHeaderTimeoutMs
+	}
+	if patch.RequestTimeoutMs != nil {
+		if *patch.RequestTimeoutMs < 30000 || *patch.RequestTimeoutMs > 3600000 {
+			writeError(w, http.StatusBadRequest, "request_timeout_ms must be between 30000 and 3600000")
+			return
+		}
+		current.RequestTimeoutMs = *patch.RequestTimeoutMs
+	}
 
 	// Enforce mutual exclusion: caveman and terse both inject system-prompt
 	// directives that conflict, so only one can be active. The last toggle
@@ -250,6 +299,16 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Notify pipeline of timeout changes so they take effect without restart.
+	if s.timeoutNotifier != nil {
+		s.timeoutNotifier.NotifyTimeouts(
+			time.Duration(current.StreamStallTimeoutMs)*time.Millisecond,
+			time.Duration(current.ResponseHeaderTimeoutMs)*time.Millisecond,
+			time.Duration(current.RequestTimeoutMs)*time.Millisecond,
+		)
+	}
+
 	writeJSON(w, http.StatusOK, current)
 }
 
