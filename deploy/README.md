@@ -86,7 +86,7 @@ POSTGRES_PASSWORD=your_secure_postgres_password
 **2. Start the Deployment**
 Use the override compose file to start both KeiRouter and Postgres:
 ```bash
-docker compose -f compose.yaml -f deploy/compose.postgres.yaml up -d --build
+docker compose -f compose.yaml -f compose.postgres.yaml up -d --build
 ```
 *Note: The app container still stores runtime secrets and generated files in a Docker volume mounted at `/data`, while request/account data is stored in the Postgres database.*
 

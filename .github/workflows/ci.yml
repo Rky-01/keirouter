@@ -63,7 +63,7 @@ jobs:
         run: docker compose -f compose.yaml config
 
       - name: Validate Postgres Compose override
-        run: docker compose -f compose.yaml -f deploy/compose.postgres.yaml config
+        run: docker compose -f compose.yaml -f compose.postgres.yaml config
 
       - name: Build Docker image
         run: docker build -f deploy/Dockerfile -t keirouter:test .
