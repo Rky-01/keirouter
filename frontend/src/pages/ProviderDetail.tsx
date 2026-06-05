@@ -948,7 +948,7 @@ function AddApiKeyModal({
           )}
 
           {checkStatus === "ok" && (
-            <div className="flex items-center gap-2 rounded-lg border border-accent-300 bg-accent-50 px-3 py-2 text-sm text-accent-700">
+            <div className="flex items-center gap-2 rounded-lg border border-accent-300 bg-accent-50 px-3 py-2 text-sm text-accent-700 dark:border-accent-700 dark:bg-accent-900/30 dark:text-accent-200">
               <CheckCircle className="h-4 w-4 shrink-0" />
               Key is valid
             </div>

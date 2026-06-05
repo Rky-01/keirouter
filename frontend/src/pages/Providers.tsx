@@ -130,7 +130,7 @@ function ProviderCard({ provider: p, accountCount }: { provider: Provider; accou
       <div className="flex w-full items-start justify-between gap-2">
         <ProviderIcon provider={p} />
         {connected ? (
-          <span className="inline-flex items-center gap-1.5 rounded-md bg-accent-100 px-2 py-0.5 text-xs font-medium text-accent-700">
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-accent-100 px-2 py-0.5 text-xs font-medium text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
             <StatusDot tone="success" />
             Connected
           </span>

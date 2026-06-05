@@ -208,7 +208,7 @@ function ChainStartNode({ data }: { data: { name: string; strategy: string; step
     <>
       <Handle type="source" position={Position.Right} className="!bg-accent-500 !border-2 !border-[var(--bg)] !w-3 !h-3 -mr-1.5" />
       <div className="group relative flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 pr-6 shadow-[var(--shadow-float)] transition-all hover:border-accent-500/50">
-        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent-500/10 to-transparent opacity-50" />
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent-500/10 to-transparent opacity-50 dark:from-accent-500/5 dark:opacity-30" />
         <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-500/20 text-accent-600 dark:text-accent-400">
           <Layers className="h-5 w-5" />
         </div>

@@ -212,7 +212,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                       onMouseEnter={() => setSelectedIndex(idx)}
                       className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition-colors ${
                         selected
-                          ? "bg-accent-100 text-accent-700"
+                          ? "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200"
                           : "text-[var(--text)] hover:bg-[var(--bg-subtle)]"
                       }`}
                     >

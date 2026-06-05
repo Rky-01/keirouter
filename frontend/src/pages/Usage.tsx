@@ -127,7 +127,7 @@ function UsageContent({ data, models, period }: { data: any; models: ModelUsage[
               <h3 className="text-sm font-semibold tracking-tight">Routing Topology</h3>
             </div>
           </div>
-          <div className="p-4 flex-1 flex flex-col justify-center relative bg-gradient-to-br from-blue-50/30 via-transparent to-accent-50/30 dark:from-blue-950/20 dark:to-accent-950/20">
+          <div className="p-4 flex-1 flex flex-col justify-center relative bg-gradient-to-br from-blue-50/30 via-transparent to-accent-50/30 dark:from-transparent dark:to-transparent">
             <ProviderTopology providers={providers} />
           </div>
         </div>
