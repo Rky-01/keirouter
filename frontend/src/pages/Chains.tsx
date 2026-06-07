@@ -48,6 +48,8 @@ function SearchableSelect({
   searchPlaceholder = "Search…",
   disabled = false,
   loading = false,
+  allowCustom = false,
+  customHint = "Use custom value",
   className = "",
 }: {
   options: SelectOption[];
@@ -57,6 +59,8 @@ function SearchableSelect({
   searchPlaceholder?: string;
   disabled?: boolean;
   loading?: boolean;
+  allowCustom?: boolean;
+  customHint?: string;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -66,7 +70,21 @@ function SearchableSelect({
   const inputRef = useRef<HTMLInputElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
 
-  const selected = options.find((o) => o.value === value);
+  // Fall back to a synthetic option so a value set before options load (or a
+  // custom value not in the catalog) still renders its label instead of the
+  // placeholder.
+  const selected = options.find((o) => o.value === value) ?? (value ? { value, label: value } : undefined);
+
+  const trimmedQuery = query.trim();
+  const exactMatch = options.some((o) => o.value === trimmedQuery);
+  const showCustom = allowCustom && trimmedQuery.length > 0 && !exactMatch;
+
+  const commitCustom = () => {
+    if (!trimmedQuery) return;
+    onChange(trimmedQuery);
+    setOpen(false);
+    setQuery("");
+  };
 
   const filtered = useMemo(() => {
     if (!query.trim()) return options;
@@ -141,14 +159,37 @@ function SearchableSelect({
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && showCustom) {
+                e.preventDefault();
+                commitCustom();
+              }
+            }}
             placeholder={searchPlaceholder}
             className="w-full bg-transparent text-sm outline-none placeholder:text-[var(--text-muted)]"
           />
         </div>
       </div>
       <div className="max-h-56 overflow-y-auto p-1">
+        {showCustom && (
+          <button
+            type="button"
+            onClick={commitCustom}
+            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--bg-subtle)]"
+          >
+            <Plus className="h-4 w-4 shrink-0 text-accent-500" />
+            <div className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{customHint}</span>
+              <span className="block truncate font-mono text-[11px] text-[var(--text-muted)]">{trimmedQuery}</span>
+            </div>
+          </button>
+        )}
         {filtered.length === 0 ? (
-          <p className="px-3 py-2.5 text-center text-xs text-[var(--text-muted)]">No results</p>
+          !showCustom && (
+            <p className="px-3 py-2.5 text-center text-xs text-[var(--text-muted)]">
+              {allowCustom ? "No models found — type a model id to use it" : "No results"}
+            </p>
+          )
         ) : (
           filtered.map((opt) => (
             <button
@@ -839,15 +880,17 @@ function ChainModal({ chain, providers, onClose }: {
                 placeholder="Provider…"
                 searchPlaceholder="Search providers…"
               />
-              <SearchableSelect
-                options={fallbackModelOptions}
-                value={fallbackModel}
-                onChange={(v) => setFallbackModel(v)}
-                placeholder={fallbackProvider ? "Model…" : "Select provider first"}
-                searchPlaceholder="Search models…"
-                disabled={!fallbackProvider}
-                loading={fallbackModelsQuery.isLoading}
-              />
+          <SearchableSelect
+            options={fallbackModelOptions}
+            value={fallbackModel}
+            onChange={(v) => setFallbackModel(v)}
+            placeholder={fallbackProvider ? "Model…" : "Select provider first"}
+            searchPlaceholder="Search or type a model id…"
+            disabled={!fallbackProvider}
+            loading={fallbackModelsQuery.isLoading}
+            allowCustom
+            customHint="Use this model id"
+          />
             </div>
           </div>
 
@@ -951,9 +994,11 @@ function StepRow({
             value={step.model}
             onChange={(v) => onUpdate({ model: v })}
             placeholder={step.provider ? "Model…" : "Select provider first"}
-            searchPlaceholder="Search models…"
+            searchPlaceholder="Search or type a model id…"
             disabled={!step.provider}
             loading={modelsQuery.isLoading}
+            allowCustom
+            customHint="Use this model id"
             className="flex-1 min-w-0"
           />
         </div>
