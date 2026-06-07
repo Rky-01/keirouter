@@ -106,3 +106,128 @@ func TestKiro_RenderRequest_ToolsAndHistory(t *testing.T) {
 		t.Errorf("tools should attach to current message context: %v", cm)
 	}
 }
+
+// When the client sends NO tools but the history references tool calls/results,
+// the structured tool content must be flattened to text. Leaving structured
+// tool references without a tools array makes Kiro return 400 "Improperly
+// formed request".
+func TestKiro_RenderRequest_FlattensToolsWhenClientSentNone(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-opus-4.8-thinking",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "list files"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "calling tool"},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call_1", Name: "ls", Arguments: json.RawMessage(`{"path":"."}`)}},
+			}},
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: "call_1", Content: "a.go\nb.go"}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "thanks"}}},
+		},
+		// No Tools sent by the client.
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No structured tool content (toolUses/toolResults/tools) may survive
+	// anywhere in the payload.
+	raw := string(body)
+	for _, banned := range []string{`"toolUses"`, `"toolResults"`, `"toolSpecification"`, `"tools"`} {
+		if strings.Contains(raw, banned) {
+			t.Errorf("flattened payload must not contain %s: %s", banned, raw)
+		}
+	}
+
+	// The tool call/result content should survive as readable text in history.
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+	var allText strings.Builder
+	for _, h := range cs["history"].([]any) {
+		hm := h.(map[string]any)
+		if uim, ok := hm["userInputMessage"].(map[string]any); ok {
+			allText.WriteString(uim["content"].(string))
+			allText.WriteString("\n")
+		}
+		if arm, ok := hm["assistantResponseMessage"].(map[string]any); ok {
+			allText.WriteString(arm["content"].(string))
+			allText.WriteString("\n")
+		}
+	}
+	// The last user turn is promoted to currentMessage, so the flattened tool
+	// result (folded into the final user turn) lives there.
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	allText.WriteString(cm["content"].(string))
+	text := allText.String()
+	if !strings.Contains(text, "[Tool call: ls(") {
+		t.Errorf("tool call should be flattened to text: %q", text)
+	}
+	if !strings.Contains(text, "[Tool result: a.go") {
+		t.Errorf("tool result should be flattened to text: %q", text)
+	}
+}
+
+// When the client DOES send tools but a tool_result references a tool_use that
+// was dropped by client-side compaction, the orphaned result must be folded
+// back into user text instead of left as a dangling structured reference
+// (which makes Kiro return 400).
+func TestKiro_RenderRequest_ReconcilesOrphanedToolResults(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-opus-4.8-thinking",
+		Messages: []core.Message{
+			// Assistant message that WOULD have contained the matching tool_use
+			// has been compacted away — only its text remains.
+			{Role: core.RoleAssistant, Content: []core.ContentPart{{Type: core.PartText, Text: "earlier reply"}}},
+			// Orphaned tool result: no assistant toolUse has id "orphan_1".
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: "orphan_1", Content: "stale output"}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "continue please"}}},
+		},
+		Tools: []core.Tool{{Name: "noop", Description: "noop", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	// The orphaned toolResult must not survive as a structured reference.
+	walk := func(uim map[string]any) {
+		if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok {
+			if trs, ok := ctx["toolResults"].([]any); ok {
+				for _, tr := range trs {
+					if id, _ := tr.(map[string]any)["toolUseId"].(string); id == "orphan_1" {
+						t.Errorf("orphaned toolResult should be removed, found: %v", tr)
+					}
+				}
+			}
+		}
+	}
+	collected := strings.Builder{}
+	for _, h := range cs["history"].([]any) {
+		if uim, ok := h.(map[string]any)["userInputMessage"].(map[string]any); ok {
+			walk(uim)
+			collected.WriteString(uim["content"].(string))
+			collected.WriteString("\n")
+		}
+	}
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	walk(cm)
+	collected.WriteString(cm["content"].(string))
+
+	// The salvaged content must survive as text somewhere.
+	if !strings.Contains(collected.String(), "stale output") {
+		t.Errorf("orphaned tool result content should be salvaged as text: %q", collected.String())
+	}
+}

@@ -180,6 +180,17 @@ func (KiroCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any, map[string]any) {
 	var history []map[string]any
 
+	// When the client did not send tools, flatten any tool calls/results in the
+	// history into plain text. Kiro's validator requires a non-empty
+	// currentMessage.userInputMessageContext.tools array whenever the history
+	// references any structured tool use; omitting it returns "Improperly formed
+	// request" (HTTP 400). Collapsing tool interactions to text keeps the request
+	// honest and sidesteps that rule.
+	messages := req.Messages
+	if len(req.Tools) == 0 {
+		messages = flattenKiroToolInteractions(messages)
+	}
+
 	flushUser := func(text string, toolResults []map[string]any, images []map[string]any) {
 		uim := map[string]any{"content": firstNonEmptyStr(text, "continue"), "modelId": upstream}
 		if len(images) > 0 {
@@ -195,7 +206,7 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 		history = append(history, map[string]any{"userInputMessage": uim})
 	}
 
-	for _, m := range req.Messages {
+	for _, m := range messages {
 		switch m.Role {
 		case core.RoleAssistant:
 			content := strings.TrimSpace(m.TextContent())
@@ -255,12 +266,15 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 		}
 	}
 
-	// Merge consecutive user messages (Kiro requires alternating roles).
+	// Merge consecutive user messages (Kiro requires alternating roles). When
+	// merging, also combine userInputMessageContext (toolResults/images) so the
+	// second message's structured content is not silently dropped.
 	var merged []map[string]any
 	for _, h := range history {
 		if uim, ok := h["userInputMessage"].(map[string]any); ok && len(merged) > 0 {
 			if prev, ok := merged[len(merged)-1]["userInputMessage"].(map[string]any); ok {
 				prev["content"] = prev["content"].(string) + "\n\n" + uim["content"].(string)
+				mergeKiroUIMContext(prev, uim)
 				continue
 			}
 		}
@@ -275,6 +289,17 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 			merged = append(merged[:i], merged[i+1:]...)
 			break
 		}
+	}
+
+	// Reconcile orphaned toolResults — those whose toolUseId has no matching
+	// toolUse in any assistant message. Client-side compaction can truncate the
+	// assistant message containing the tool_use while keeping the tool_result;
+	// the dangling structured reference makes Kiro return 400. Fold the orphaned
+	// content back into the user text instead of discarding it. Only needed on
+	// the tools-present path; flattenKiroToolInteractions already collapsed
+	// everything to text when no tools were sent.
+	if len(req.Tools) > 0 {
+		reconcileOrphanedKiroToolResults(merged, current)
 	}
 
 	// Attach tools to the current message's context.
@@ -306,6 +331,205 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 	}
 
 	return merged, current
+}
+
+// kiroToolCallToText renders a tool call as a readable text line, used when
+// collapsing structured tool interactions into plain text.
+func kiroToolCallToText(name string, args json.RawMessage) string {
+	argStr := "{}"
+	if len(args) > 0 {
+		argStr = string(args)
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "unknown"
+	}
+	return fmt.Sprintf("[Tool call: %s(%s)]", name, argStr)
+}
+
+// kiroToolResultToText renders a tool result as a readable text line.
+func kiroToolResultToText(content string) string {
+	return fmt.Sprintf("[Tool result: %s]", content)
+}
+
+// flattenKiroToolInteractions collapses every structured tool call/result in a
+// conversation into plain text. Invoked only when the client did NOT send a
+// tools array: without it, any structured tool reference in the history makes
+// Kiro require currentMessage.userInputMessageContext.tools and otherwise
+// return "Improperly formed request" (HTTP 400). Folding to text keeps the
+// request honest and removes the structured content the validator keys on.
+func flattenKiroToolInteractions(messages []core.Message) []core.Message {
+	out := make([]core.Message, 0, len(messages))
+	for _, m := range messages {
+		switch m.Role {
+		case core.RoleTool:
+			var parts []string
+			for _, p := range m.Content {
+				if p.Type == core.PartToolResult && p.ToolResult != nil {
+					parts = append(parts, kiroToolResultToText(p.ToolResult.Content))
+				}
+			}
+			out = append(out, core.Message{
+				Role:    core.RoleUser,
+				Content: []core.ContentPart{{Type: core.PartText, Text: strings.Join(parts, "\n")}},
+			})
+
+		case core.RoleAssistant:
+			var parts []string
+			for _, p := range m.Content {
+				switch p.Type {
+				case core.PartText:
+					if p.Text != "" {
+						parts = append(parts, p.Text)
+					}
+				case core.PartToolCall:
+					if p.ToolCall != nil {
+						parts = append(parts, kiroToolCallToText(p.ToolCall.Name, p.ToolCall.Arguments))
+					}
+				}
+			}
+			out = append(out, core.Message{
+				Role:    core.RoleAssistant,
+				Content: []core.ContentPart{{Type: core.PartText, Text: strings.Join(parts, "\n")}},
+			})
+
+		default:
+			// User/system: replace any tool_result parts with text, keep the rest
+			// (text, images) untouched.
+			newParts := make([]core.ContentPart, 0, len(m.Content))
+			for _, p := range m.Content {
+				if p.Type == core.PartToolResult && p.ToolResult != nil {
+					newParts = append(newParts, core.ContentPart{
+						Type: core.PartText,
+						Text: kiroToolResultToText(p.ToolResult.Content),
+					})
+				} else {
+					newParts = append(newParts, p)
+				}
+			}
+			out = append(out, core.Message{Role: m.Role, Name: m.Name, Content: newParts})
+		}
+	}
+	return out
+}
+
+// mergeKiroUIMContext merges the userInputMessageContext of src into dst when
+// two consecutive user messages are combined, so toolResults from the second
+// message survive the merge.
+func mergeKiroUIMContext(dst, src map[string]any) {
+	srcCtx, ok := src["userInputMessageContext"].(map[string]any)
+	if !ok || len(srcCtx) == 0 {
+		return
+	}
+	dstCtx, ok := dst["userInputMessageContext"].(map[string]any)
+	if !ok {
+		dst["userInputMessageContext"] = srcCtx
+		return
+	}
+	if srcTR, ok := srcCtx["toolResults"].([]map[string]any); ok && len(srcTR) > 0 {
+		dstTR, _ := dstCtx["toolResults"].([]map[string]any)
+		dstCtx["toolResults"] = append(dstTR, srcTR...)
+	}
+	if srcImg, ok := srcCtx["images"].([]map[string]any); ok && len(srcImg) > 0 {
+		dstImg, _ := dstCtx["images"].([]map[string]any)
+		dstCtx["images"] = append(dstImg, srcImg...)
+	}
+}
+
+// reconcileOrphanedKiroToolResults removes toolResults whose toolUseId has no
+// matching toolUse in any assistant message, folding their content back into
+// the carrier's user text. A dangling structured reference makes Kiro return
+// 400, but the client deliberately kept the result through compaction, so the
+// content is salvaged as text rather than discarded.
+// userInputMessage map; orphans can land on it or on any history user turn.
+func reconcileOrphanedKiroToolResults(history []map[string]any, current map[string]any) {
+	// Phase 1: collect valid toolUseIds from assistant history.
+	valid := map[string]bool{}
+	for _, h := range history {
+		arm, ok := h["assistantResponseMessage"].(map[string]any)
+		if !ok {
+			continue
+		}
+		tus, ok := arm["toolUses"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, tu := range tus {
+			if id, ok := tu["toolUseId"].(string); ok && id != "" {
+				valid[id] = true
+			}
+		}
+	}
+
+	// Phase 2: across history + current, keep results with a matching toolUse
+	// and salvage the rest as text.
+	for _, h := range history {
+		if uim, ok := h["userInputMessage"].(map[string]any); ok {
+			reconcileKiroUIMOrphans(uim, valid)
+		}
+	}
+	if current != nil {
+		reconcileKiroUIMOrphans(current, valid)
+	}
+}
+
+// reconcileKiroUIMOrphans salvages orphaned toolResults on a single
+// userInputMessage map.
+func reconcileKiroUIMOrphans(uim map[string]any, valid map[string]bool) {
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		return
+	}
+	trs, ok := ctx["toolResults"].([]map[string]any)
+	if !ok || len(trs) == 0 {
+		return
+	}
+
+	var kept []map[string]any
+	var salvaged []string
+	for _, tr := range trs {
+		id, _ := tr["toolUseId"].(string)
+		if valid[id] {
+			kept = append(kept, tr)
+		} else {
+			salvaged = append(salvaged, kiroToolResultToText(extractKiroToolResultText(tr)))
+		}
+	}
+
+	if len(salvaged) == 0 {
+		return // no orphans — leave untouched
+	}
+
+	extra := strings.Join(salvaged, "\n")
+	if cur, _ := uim["content"].(string); cur != "" {
+		uim["content"] = cur + "\n\n" + extra
+	} else {
+		uim["content"] = extra
+	}
+
+	if len(kept) > 0 {
+		ctx["toolResults"] = kept
+	} else {
+		delete(ctx, "toolResults")
+	}
+	if len(ctx) == 0 {
+		delete(uim, "userInputMessageContext")
+	}
+}
+
+// extractKiroToolResultText pulls the concatenated text out of a Kiro
+// toolResult's content array ([]{"text": ...}).
+func extractKiroToolResultText(tr map[string]any) string {
+	content, ok := tr["content"].([]map[string]any)
+	if !ok {
+		return ""
+	}
+	var parts []string
+	for _, c := range content {
+		if t, ok := c["text"].(string); ok {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // ParseResponse / RenderResponse / stream methods: Kiro responses are binary
