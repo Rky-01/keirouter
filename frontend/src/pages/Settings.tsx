@@ -2,15 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
-  ArrowUpCircle, CheckCircle2, ExternalLink, Lock, Eye, EyeOff, Shield, ShieldOff, Download, Upload,
-  Gauge, Network, Settings2,
+  ArrowUpCircle, CheckCircle2, ExternalLink,
+  Gauge,
 } from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useUpdateInfo } from "../components/UpdateNotification";
 import { useToast } from "../components/Toast";
 import {
-  Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field, Modal,
+  Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field,
   SettingsSection,
 } from "../components/ui";
 
