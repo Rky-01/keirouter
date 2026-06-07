@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
+  ArrowUpCircle, CheckCircle2, ExternalLink,
 } from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
+import { useUpdateInfo } from "../components/UpdateNotification";
 import { useToast } from "../components/Toast";
 import {
   Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field,
@@ -160,6 +162,9 @@ export function SettingsPage() {
               />
             </div>
           </Card>
+
+          {/* Updates */}
+          <UpdatesSettings />
 
           {/* Database */}
           <DatabaseSettings />
@@ -489,6 +494,94 @@ function DatabaseSettings() {
           className="hidden"
           onChange={handleImport}
         />
+      </div>
+    </Card>
+  );
+}
+
+function UpdatesSettings() {
+  const { data, isLoading, isError } = useUpdateInfo();
+
+  const publishedLabel = data?.published_at
+    ? new Date(data.published_at).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : "";
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Updates"
+        description="Check for new KeiRouter releases and read the latest changelog."
+        icon={ArrowUpCircle}
+      />
+      <div className="border-t border-[var(--border)] px-6 py-4">
+        {isLoading ? (
+          <Spinner />
+        ) : isError || !data || !data.checked ? (
+          <p className="text-sm text-[var(--text-muted)]">
+            Could not reach GitHub to check for updates. Current version:{" "}
+            <span className="font-mono text-[var(--text)]">{data?.current ?? "dev"}</span>
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Current
+                </p>
+                <p className="font-mono text-sm">{data.current}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Latest
+                </p>
+                <p className="font-mono text-sm">{data.latest || "—"}</p>
+              </div>
+              <div className="ml-auto">
+                {data.update_available ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-accent-100 px-3 py-1 text-xs font-medium text-accent-700 dark:bg-accent-900/40 dark:text-accent-200">
+                    <ArrowUpCircle className="h-3.5 w-3.5" />
+                    Update available
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Up to date
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {data.update_available && data.changelog && (
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    Changelog{publishedLabel ? ` · ${publishedLabel}` : ""}
+                  </p>
+                  {data.html_url && (
+                    <a
+                      href={data.html_url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="flex items-center gap-1 text-xs text-accent-600 hover:underline dark:text-accent-300"
+                    >
+                      View on GitHub
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+                <div className="max-h-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-[var(--text)]">
+                    {data.changelog}
+                  </pre>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );

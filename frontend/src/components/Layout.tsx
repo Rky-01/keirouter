@@ -26,6 +26,7 @@ import {
 import { api } from "../lib/api";
 import { ThemeToggle } from "./ThemeToggle";
 import { CommandPalette } from "./CommandPalette";
+import { UpdateNotification } from "./UpdateNotification";
 
 interface NavItem {
   to: string;
@@ -248,7 +249,8 @@ function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSe
         </div>
       </button>
 
-        <div className="ml-auto flex items-center">
+        <div className="ml-auto flex items-center gap-1">
+          <UpdateNotification />
           <ProfileMenu />
         </div>
       </div>

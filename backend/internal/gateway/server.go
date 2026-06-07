@@ -29,6 +29,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/transform"
 	"github.com/mydisha/keirouter/backend/internal/tunnel/cloudflare"
 	"github.com/mydisha/keirouter/backend/internal/tunnel/tailscale"
+	"github.com/mydisha/keirouter/backend/internal/update"
 	"github.com/mydisha/keirouter/backend/internal/usagehub"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
@@ -62,6 +63,8 @@ type Server struct {
 	tsManager     *tailscale.Manager
 	usageHub       *usagehub.Hub
 	timeoutNotifier *TimeoutNotifier
+	version        string
+	updates        *update.Checker
 	router         chi.Router
 }
 
@@ -69,6 +72,8 @@ type Server struct {
 type Deps struct {
 	Config      config.Config
 	Logger      *slog.Logger
+	Version     string
+	Updates     *update.Checker
 	DB          *store.DB
 	Identity    *identity.Service
 	Auth        *auth.Service
@@ -141,6 +146,8 @@ func New(d Deps) *Server {
 		tsManager:     d.TsManager,
 		usageHub:       d.UsageHub,
 		timeoutNotifier: d.TimeoutNotifier,
+		version:        d.Version,
+		updates:        d.Updates,
 	}
 	s.router = s.routes()
 	return s
@@ -168,7 +175,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/v1", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":    "KeiRouter",
-			"version": "0.1.0",
+			"version": s.versionString(),
 			"status":  "ok",
 			"endpoints": []string{
 				"/v1/chat/completions",

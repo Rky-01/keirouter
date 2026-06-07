@@ -31,6 +31,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/transform"
 	"github.com/mydisha/keirouter/backend/internal/tunnel/cloudflare"
 	"github.com/mydisha/keirouter/backend/internal/tunnel/tailscale"
+	"github.com/mydisha/keirouter/backend/internal/update"
 	"github.com/mydisha/keirouter/backend/internal/usagehub"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
@@ -45,7 +46,7 @@ type App struct {
 
 // Build constructs the application from configuration. It opens the database,
 // applies migrations, initializes the crypto root, and wires the gateway.
-func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, error) {
+func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version string) (*App, error) {
 	dataDir, err := resolveDataDir(cfg)
 	if err != nil {
 		return nil, err
@@ -182,6 +183,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	gw := gateway.New(gateway.Deps{
 		Config:      cfg,
 		Logger:      log,
+		Version:     version,
+		Updates:     update.NewChecker(version, ""),
 		DB:          db,
 		Identity:    idSvc,
 		Auth:        authSvc,

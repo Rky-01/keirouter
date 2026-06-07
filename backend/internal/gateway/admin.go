@@ -91,6 +91,9 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Post("/settings/database", s.adminImportDatabase)
 	r.Post("/settings/proxy-test", s.adminTestProxy)
 
+	// Update check (queries GitHub for the latest release + changelog).
+	r.Get("/update/check", s.adminUpdateCheck)
+
 	// Tunnel management endpoints.
 	r.Get("/tunnel/status", s.adminTunnelStatus)
 	r.Post("/tunnel/enable", s.adminTunnelEnable)

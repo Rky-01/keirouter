@@ -67,7 +67,7 @@ func run() error {
 		return nil
 	}
 
-	application, err := app.Build(ctx, cfg, log)
+	application, err := app.Build(ctx, cfg, log, Version)
 	if err != nil {
 		return fmt.Errorf("build app: %w", err)
 	}

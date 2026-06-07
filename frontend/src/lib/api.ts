@@ -407,6 +407,16 @@ export interface AuthStatus {
   onboarding_complete: boolean;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  changelog: string;
+  published_at: string;
+  html_url: string;
+  checked: boolean;
+}
+
 class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -617,6 +627,9 @@ export const api = {
     request<{ ids: string[] }>("POST", "/models/disabled", { providerAlias, ids }),
   enableModels: (providerAlias: string, ids: string[]) =>
     request<{ ids: string[] }>("DELETE", "/models/disabled", { providerAlias, ids }),
+
+  // Update check (queries GitHub for the latest release + changelog).
+  updateCheck: () => request<UpdateInfo>("GET", "/update/check"),
 
   // Database export/import.
   exportDatabase: () => request<Record<string, unknown>>("GET", "/settings/database"),
