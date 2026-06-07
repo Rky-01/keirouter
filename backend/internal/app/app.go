@@ -98,7 +98,8 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	disp := dispatch.New(connRegistry, db.Accounts(), v)
 	// Refresh expiring OAuth access tokens just-in-time before each upstream
 	// call, persisting the rotated tokens.
-	disp.SetTokenRefresher(oauth.NewTokenManager(v, db.Accounts()))
+	tokenRefresher := oauth.NewTokenManager(v, db.Accounts())
+	disp.SetTokenRefresher(tokenRefresher)
 	// Resolve proxy pool bindings for accounts that have one.
 	disp.SetPoolSource(db.ProxyPools())
 	// Model-level cooldowns and round-robin chain rotation.
@@ -206,6 +207,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		TsManager:   tsManager,
 		UsageHub:       uh,
 		TimeoutNotifier: timeoutNotifier,
+		Refresher:       tokenRefresher,
 	})
 
 	srv := &http.Server{

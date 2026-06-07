@@ -23,6 +23,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/identity"
+	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
@@ -64,6 +65,7 @@ type Server struct {
 	tsManager       *tailscale.Manager
 	usageHub        *usagehub.Hub
 	timeoutNotifier *TimeoutNotifier
+	refresher       dispatch.TokenRefresher
 	version         string
 	updates         *update.Checker
 	router          chi.Router
@@ -99,6 +101,7 @@ type Deps struct {
 	TsManager       *tailscale.Manager
 	UsageHub        *usagehub.Hub
 	TimeoutNotifier *TimeoutNotifier
+	Refresher       dispatch.TokenRefresher
 }
 
 // New builds a gateway Server and wires its routes.
@@ -147,6 +150,7 @@ func New(d Deps) *Server {
 		tsManager:       d.TsManager,
 		usageHub:        d.UsageHub,
 		timeoutNotifier: d.TimeoutNotifier,
+		refresher:       d.Refresher,
 		version:         d.Version,
 		updates:         d.Updates,
 	}

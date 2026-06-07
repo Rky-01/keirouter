@@ -1865,6 +1865,15 @@ func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Accou
 	if !ok {
 		return nil // connector doesn't support validation
 	}
+	// Refresh OAuth tokens if they are about to expire so the upstream probe
+	// does not fail with a stale access token.
+	if s.refresher != nil {
+		if refreshed, err := s.refresher.EnsureFresh(ctx, acc); err == nil {
+			acc = refreshed
+		}
+		// If refresh fails, fall through with the original account — Validate
+		// will report the upstream error, which is more actionable.
+	}
 	creds, err := s.vault.Open(acc)
 	if err != nil {
 		return errors.New("could not decrypt credentials")
