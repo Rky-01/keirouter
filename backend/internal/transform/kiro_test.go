@@ -705,12 +705,11 @@ func TestKiro_RenderRequest_NormalizesToolSchema(t *testing.T) {
 	}
 }
 
-// TestKiro_RenderRequest_StripsBracketSuffix reproduces the documented 9router
-// issue #1503: Claude Code appends a "[1m]" annotation (1M-context marker) to
-// the model name. Kiro (AWS CodeWhisperer/Bedrock) has no such axis, so the
-// literal bracket segment must be stripped from the upstream modelId — leaving
-// it makes CodeWhisperer reject the request with "Improperly formed request"
-// (HTTP 400) for every model.
+// TestKiro_RenderRequest_StripsBracketSuffix verifies that bracket-suffix
+// annotations (e.g. "[1m]" for 1M-context markers) are stripped from the
+// model name before it reaches Kiro. CodeWhisperer rejects any modelId
+// containing literal bracket segments with "Improperly formed request"
+// (HTTP 400).
 func TestKiro_RenderRequest_StripsBracketSuffix(t *testing.T) {
 	cases := []struct {
 		in   string
