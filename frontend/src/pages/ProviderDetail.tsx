@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
@@ -194,17 +194,26 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Account update failed", e.message),
   });
 
-  const testAccount = useMutation({
-    mutationFn: (accountId: string) => api.testAccount(accountId),
-    onSuccess: (data) => {
-      if (data.status === "ok") {
-        toast.success("Credentials verified", "The upstream API key is valid and the provider is reachable.");
-      } else {
-        toast.error("Credential check failed", data.message);
-      }
-    },
-    onError: (e: Error) => toast.error("Credential check failed", e.message),
-  });
+  // Per-account connection test results. Each entry holds the latest status
+  // for an account: testing (in flight), ok, or error (with the upstream
+  // message). Drives the inline status badge in each account row.
+  const [testResults, setTestResults] = useState<Record<string, { status: "testing" | "ok" | "error"; message?: string }>>({});
+  const [testingAll, setTestingAll] = useState(false);
+
+  // runTest probes a single account's credentials and records the result.
+  // Returns true when the credential is valid.
+  const runTest = async (accountId: string): Promise<boolean> => {
+    setTestResults((prev) => ({ ...prev, [accountId]: { status: "testing" } }));
+    try {
+      const res = await api.testAccount(accountId);
+      const ok = res.status === "ok";
+      setTestResults((prev) => ({ ...prev, [accountId]: { status: ok ? "ok" : "error", message: res.message } }));
+      return ok;
+    } catch (e) {
+      setTestResults((prev) => ({ ...prev, [accountId]: { status: "error", message: (e as Error).message } }));
+      return false;
+    }
+  };
 
   const disableModelsMut = useMutation({
     mutationFn: (ids: string[]) => api.disableModels(id!, ids),
@@ -236,6 +245,27 @@ export function ProviderDetailPage() {
   // Sort accounts by priority for display.
   const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
   const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
+
+  // runTestAll tests every account sequentially (one at a time), updating each
+  // row's status as it goes, then summarizes the outcome. Failures don't stop
+  // the run — every account is checked.
+  const runTestAll = async () => {
+    if (testingAll || sortedAccounts.length === 0) return;
+    setTestingAll(true);
+    let ok = 0;
+    let failed = 0;
+    for (const a of sortedAccounts) {
+      const success = await runTest(a.id);
+      if (success) ok++;
+      else failed++;
+    }
+    setTestingAll(false);
+    if (failed === 0) {
+      toast.success("All accounts verified", `${ok} account${ok === 1 ? "" : "s"} passed the connection test.`);
+    } else {
+      toast.error("Some checks failed", `${ok} ok, ${failed} failed.`);
+    }
+  };
 
   const moveAccount = (accId: string, direction: "up" | "down") => {
     const idx = sortedAccounts.findIndex((a) => a.id === accId);
@@ -299,6 +329,19 @@ export function ProviderDetailPage() {
             title="Connected accounts"
             action={
               <div className="flex items-center gap-2">
+                {myAccounts.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    className="h-8 px-3 text-xs"
+                    onClick={runTestAll}
+                    disabled={testingAll}
+                  >
+                    <CheckCircle className={`h-3.5 w-3.5 ${testingAll ? "animate-pulse" : ""}`} />
+                    {testingAll
+                      ? `Testing ${Object.values(testResults).filter((r) => r.status !== "testing").length}/${myAccounts.length}`
+                      : "Test all"}
+                  </Button>
+                )}
                 {isKiro && (
                   <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setKiroOpen(true)}>
                     <Plug className="h-3.5 w-3.5" />
@@ -339,9 +382,10 @@ export function ProviderDetailPage() {
                   onDelete={() => remove.mutate(a.id)}
                   onMoveUp={() => moveAccount(a.id, "up")}
                   onMoveDown={() => moveAccount(a.id, "down")}
-                  onTest={() => testAccount.mutate(a.id)}
+                  onTest={() => runTest(a.id)}
                   onUpdateProxy={(patch) => updateAccount.mutate({ id: a.id, patch })}
-                  testing={testAccount.isPending}
+                  testResult={testResults[a.id]}
+                  disabledByBatch={testingAll}
                 />
               ))}
             </div>
@@ -628,7 +672,8 @@ function AccountRow({
   onMoveDown,
   onTest,
   onUpdateProxy,
-  testing,
+  testResult,
+  disabledByBatch,
 }: {
   account: Account;
   index: number;
@@ -639,8 +684,10 @@ function AccountRow({
   onMoveDown: () => void;
   onTest: () => void;
   onUpdateProxy: (patch: { priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
-  testing: boolean;
+  testResult?: { status: "testing" | "ok" | "error"; message?: string };
+  disabledByBatch?: boolean;
 }) {
+  const testing = testResult?.status === "testing";
   const [editPriority, setEditPriority] = useState(false);
   const [priorityVal, setPriorityVal] = useState(String(a.priority));
 
@@ -671,11 +718,40 @@ function AccountRow({
             <span className="text-sm font-medium">{a.label || a.provider}</span>
             <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API Key"}</Badge>
             {a.disabled && <Badge tone="danger">disabled</Badge>}
+            {testResult?.status === "ok" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                ✓ ok
+              </span>
+            )}
+            {testResult?.status === "error" && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                title={testResult.message}
+              >
+                ✗ {testResult.message ? "failed" : "error"}
+              </span>
+            )}
+            {testResult?.status === "testing" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+                testing…
+              </span>
+            )}
           </div>
+          {testResult?.status === "error" && testResult.message && (
+            <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium text-red-700 dark:text-red-300">Connection failed</p>
+                <p className="mt-0.5 break-words text-[11px] leading-relaxed text-red-600/90 dark:text-red-400/90">
+                  {testResult.message}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <button onClick={onTest} disabled={testing}
-            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]" title="Test credentials">
+          <button onClick={onTest} disabled={testing || disabledByBatch}
+            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] disabled:opacity-40" title="Test credentials">
             <CheckCircle className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
           </button>
           <button onClick={() => onUpdateProxy({ disabled: !a.disabled })}
