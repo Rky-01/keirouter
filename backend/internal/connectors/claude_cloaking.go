@@ -13,21 +13,20 @@ import (
 
 // Claude cloaking makes KeiRouter's traffic to api.anthropic.com look like the
 // official Claude Code CLI when using a subscription OAuth token (sk-ant-oat).
-// It is a faithful port of 9router's claudeCloaking.js + the CLAUDE_CLI_SPOOF
-// headers in its providers.js. Cloaking is anti-ban hygiene: Anthropic gates
-// subscription tokens on client identity, so a bare proxy request would be
-// rejected or flagged. None of this changes request semantics — it only adds
-// identity headers, renames client tools with an "_ide" suffix (+ decoy native
-// tool declarations), injects a billing system block, and a synthetic user id.
+// Cloaking is anti-ban hygiene: Anthropic gates subscription tokens on client
+// identity, so a bare proxy request would be rejected or flagged. None of this
+// changes request semantics — it only adds identity headers, renames client
+// tools with an "_ide" suffix (+ decoy native tool declarations), injects a
+// billing system block, and a synthetic user id.
 
 const (
 	claudeVersion    = "2.1.92"
-	claudeToolSuffix = "_ide" // CLAUDE_TOOL_SUFFIX in 9router appConstants.js
+	claudeToolSuffix = "_ide"
 	ccEntrypoint     = "sdk-cli"
 )
 
-// claudeCLISpoofHeaders mirrors CLAUDE_CLI_SPOOF_HEADERS in 9router's
-// providers.js: the full Claude Code CLI fingerprint sent to api.anthropic.com.
+// claudeCLISpoofHeaders returns the full Claude Code CLI fingerprint sent to
+// api.anthropic.com.
 func claudeCLISpoofHeaders() map[string]string {
 	return map[string]string{
 		"anthropic-version":                          "2023-06-01",
@@ -81,9 +80,8 @@ func isClaudeOAuthToken(token string) bool {
 	return strings.Contains(token, "sk-ant-oat")
 }
 
-// ccDecoyTools are the Claude Code native tool names, declared "unavailable" so
-// they act as decoys alongside the suffixed client tools. Mirrors
-// CC_DECOY_TOOLS in 9router's claudeCloaking.js.
+// ccDecoyToolNames are the Claude Code native tool names, declared
+// "unavailable" so they act as decoys alongside the suffixed client tools.
 var ccDecoyToolNames = []string{
 	"Task", "TaskOutput", "TaskStop", "TaskCreate", "TaskGet", "TaskUpdate",
 	"TaskList", "Bash", "Glob", "Grep", "Read", "Edit", "Write", "NotebookEdit",
@@ -105,6 +103,7 @@ func applyClaudeCloaking(body []byte, token string) ([]byte, map[string]string) 
 	}
 
 	toolNameMap := cloakClaudeTools(req)
+	fixCloakedToolChoice(req, toolNameMap)
 	injectBillingSystemBlock(req, body)
 	injectFakeUserID(req)
 
@@ -224,6 +223,34 @@ func injectFakeUserID(req map[string]any) {
 	sessionUUID := uuid.NewString()
 	meta["user_id"] = `{"device_id":"` + deviceID + `","account_uuid":"` + accountUUID + `","session_id":"` + sessionUUID + `"}`
 	req["metadata"] = meta
+}
+
+// fixCloakedToolChoice adjusts the tool_choice field after cloaking. When
+// tool_choice references a specific tool by name, the name must be updated to
+// match the suffixed version. When tool_choice is "auto" and no client tools
+// exist (only decoys), it is removed to prevent a 400 from Anthropic.
+func fixCloakedToolChoice(req map[string]any, toolNameMap map[string]string) {
+	tc, exists := req["tool_choice"]
+	if !exists {
+		return
+	}
+
+	switch v := tc.(type) {
+	case string:
+		// "auto" is the default and safe — remove it explicitly only when
+		// there are no client tools (only decoys), which would cause a 400.
+		if v == "auto" && len(toolNameMap) == 0 {
+			delete(req, "tool_choice")
+		}
+	case map[string]any:
+		// {"type": "tool", "name": "X"} — rename to suffixed version.
+		if name, ok := v["name"].(string); ok {
+			suffixed := name + claudeToolSuffix
+			if _, isClient := toolNameMap[suffixed]; isClient {
+				v["name"] = suffixed
+			}
+		}
+	}
 }
 
 // decloakClaudeToolNames restores original tool_use names in a parsed Anthropic

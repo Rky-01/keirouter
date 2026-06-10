@@ -114,7 +114,9 @@ func Default() Config {
 		Server: ServerConfig{
 			Host:               "127.0.0.1",
 			Port:               20180,
-			StreamStallTimeout: 30 * time.Second,
+			// 60s prevents premature stall timeouts for codex/Responses
+			// streams which may have longer thinking periods between chunks.
+			StreamStallTimeout: 60 * time.Second,
 			RequestTimeout:     5 * time.Minute,
 			CORSOrigins:        []string{"*"},
 		},

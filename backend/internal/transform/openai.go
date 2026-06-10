@@ -41,6 +41,10 @@ type oaiMessage struct {
 	Name       string        `json:"name,omitempty"`
 	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// ReasoningContent carries thinking/reasoning text that must be echoed
+	// back on follow-up turns for DeepSeek, MiniMax, and similar providers.
+	// Omitted when empty to avoid 400 errors on providers that don't support it.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type oaiToolCall struct {
@@ -116,6 +120,15 @@ func parseOAIMessage(m oaiMessage) (msg core.Message, isSystem bool, sysText str
 
 	msg.Role = mapOAIRole(role)
 	msg.Name = m.Name
+
+	// Preserve reasoning_content as a thinking part so it gets echoed back
+	// on follow-up turns (required by DeepSeek, MiniMax, etc.).
+	if m.ReasoningContent != "" && role == "assistant" {
+		msg.Content = append(msg.Content, core.ContentPart{
+			Type: core.PartThinking,
+			Text: m.ReasoningContent,
+		})
+	}
 
 	// Assistant tool calls.
 	for _, tc := range m.ToolCalls {
@@ -291,11 +304,16 @@ func renderOAIMessage(m core.Message) oaiMessage {
 	out := oaiMessage{Role: string(m.Role), Name: m.Name}
 
 	var textParts []string
+	var thinkingParts []string
 	var hasMedia bool
 	var contentParts []map[string]any
 
 	for _, p := range m.Content {
 		switch p.Type {
+		case core.PartThinking:
+			// Collect thinking/reasoning content for echoing back as
+			// reasoning_content on DeepSeek, MiniMax, and similar providers.
+			thinkingParts = append(thinkingParts, p.Text)
 		case core.PartText:
 			textParts = append(textParts, p.Text)
 		case core.PartImage:
@@ -321,6 +339,13 @@ func renderOAIMessage(m core.Message) oaiMessage {
 			out.Content = content
 			return out
 		}
+	}
+
+	// Echo reasoning_content on assistant messages. DeepSeek, MiniMax, and
+	// similar providers require this field on follow-up/tool-call turns to
+	// avoid 400 errors ("reasoning_content must be passed back").
+	if m.Role == core.RoleAssistant && len(thinkingParts) > 0 {
+		out.ReasoningContent = strings.Join(thinkingParts, "")
 	}
 
 	// When images are present, use the array-of-parts content format (OpenAI
