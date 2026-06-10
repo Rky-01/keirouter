@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"errors"
 	"io"
 	"net/http"
@@ -202,6 +202,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		s.consoleLog.Logf("DEBUG", "  target[%d]: %s/%s", i, t.Provider, t.Model)
 	}
 	affinityKey := requestAffinityKey(r, body, req)
+	body = nil // release body for GC — no longer needed
 
 	opts := pipeline.Options{
 		Targets:  resolved.Targets,

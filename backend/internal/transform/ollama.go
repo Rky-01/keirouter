@@ -2,7 +2,7 @@ package transform
 
 import (
 	"bytes"
-	"encoding/json"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
 	"strings"
 

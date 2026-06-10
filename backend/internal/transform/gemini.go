@@ -1,7 +1,7 @@
 package transform
 
 import (
-	"encoding/json"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
 
 	"github.com/mydisha/keirouter/backend/internal/core"

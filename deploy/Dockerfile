@@ -9,7 +9,7 @@ COPY frontend/ .
 RUN npm run build
 
 # ---- backend build stage ----
-FROM golang:1.24-alpine AS backend
+FROM golang:1.26-alpine AS backend
 WORKDIR /src/backend
 # VERSION is injected into the binary via -ldflags so the dashboard reports a
 # real version instead of the "dev" default. The .git dir is excluded from the

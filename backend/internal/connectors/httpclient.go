@@ -20,10 +20,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
+
+// maxResponseBodyBytes caps the size of upstream response bodies read into
+// memory. This prevents a single large response from causing an OOM spike.
+// 32 MiB matches the inbound request body limit.
+const maxResponseBodyBytes = 32 << 20 // 32 MiB
 
 // sharedClient is reused across connectors; the transport pools connections.
 // Tuned for AI-proxy workloads: many concurrent long-lived streams to a handful
@@ -37,18 +43,28 @@ var sharedClient = &http.Client{
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,  // don't wait forever for upstream headers
 		ExpectContinueTimeout: 1 * time.Second,
-		WriteBufferSize:       64 * 1024,         // larger write buffer for request bodies
-		ReadBufferSize:        64 * 1024,         // larger read buffer for response bodies
+		WriteBufferSize:       16 * 1024,         // 16 KB write buffer (reduced from 64 KB)
+		ReadBufferSize:        16 * 1024,         // 16 KB read buffer (reduced from 64 KB)
 		ForceAttemptHTTP2:     true,              // prefer HTTP/2 for multiplexed streams
 		MaxResponseHeaderBytes: 64 * 1024,        // cap response header size
 	},
 }
 
+// proxyTransportCache pools *http.Transport instances keyed by proxy config
+// string. This prevents creating a new transport (and its goroutine/buffer
+// pool) on every proxied request -- a significant memory leak.
+var proxyTransportCache sync.Map
+
 // clientFor returns an http.Client configured with proxy settings from creds.
-// When creds carry no proxy config, the shared client is returned.
+// When creds carry no proxy config, the shared client is returned. Proxy
+// transports are cached so the same transport is reused across requests.
 func clientFor(creds core.Credentials) *http.Client {
 	if creds.ProxyURL == "" && creds.RelayURL == "" {
 		return sharedClient
+	}
+	key := creds.ProxyURL + "|" + creds.RelayURL
+	if v, ok := proxyTransportCache.Load(key); ok {
+		return &http.Client{Transport: v.(*http.Transport)}
 	}
 	t := &http.Transport{
 		MaxIdleConns:          200,
@@ -57,8 +73,8 @@ func clientFor(creds core.Credentials) *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		WriteBufferSize:       64 * 1024,
-		ReadBufferSize:        64 * 1024,
+		WriteBufferSize:       16 * 1024,
+		ReadBufferSize:        16 * 1024,
 		ForceAttemptHTTP2:     true,
 	}
 	if creds.ProxyURL != "" {
@@ -66,7 +82,8 @@ func clientFor(creds core.Credentials) *http.Client {
 			t.Proxy = http.ProxyURL(u)
 		}
 	}
-	return &http.Client{Transport: t}
+	actual, _ := proxyTransportCache.LoadOrStore(key, t)
+	return &http.Client{Transport: actual.(*http.Transport)}
 }
 
 // relayRequest rewrites a request to go through a relay proxy. The relay
@@ -103,7 +120,7 @@ func doJSON(ctx context.Context, provider, model, url string, body []byte, heade
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
@@ -196,7 +213,7 @@ func doJSONMethod(ctx context.Context, method, provider, model, url string, body
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
@@ -227,7 +244,7 @@ func doFormPOST(ctx context.Context, provider, model, endpoint string, form url.
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
@@ -263,7 +280,7 @@ func doRaw(ctx context.Context, provider, model, url string, body []byte, header
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
@@ -317,7 +334,7 @@ func doMultipart(ctx context.Context, provider, model, url, fileField, filename 
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
@@ -436,7 +453,7 @@ func isMeaningfulChunk(ch core.StreamChunk) bool {
 // initial buffer to reduce allocation pressure on high-throughput streams.
 func sseScanner(r io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 	return sc
 }
 
@@ -445,7 +462,7 @@ func sseScanner(r io.Reader) *bufio.Scanner {
 // for the lifetime of the stream.
 func sseScannerPooled(r io.Reader) *bufio.Scanner {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 	return sc
 }
 
