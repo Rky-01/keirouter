@@ -42,6 +42,7 @@ const POPULARITY: Record<string, number> = {
   "gemini-cli": 35,
   commandcode: 36,
   "kimi-coding": 37,
+  qoder: 38,
   // Tier 5 — cloud platforms
   azure: 40,
   vertex: 41,

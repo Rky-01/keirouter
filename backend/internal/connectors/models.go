@@ -77,9 +77,9 @@ var providerModels = map[string][]ModelSpec{
 		m("deepseek-chat", "DeepSeek Chat"), m("deepseek-reasoner", "DeepSeek Reasoner"),
 		m("deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-v4-flash", "DeepSeek V4 Flash"),
 	},
-	"glm": {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM 4.7"), m("glm-4.6v", "GLM 4.6V (Vision)")},
+	"glm":    {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM 4.7"), m("glm-4.6v", "GLM 4.6V (Vision)")},
 	"glm-cn": {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM-4.7"), m("glm-4.6", "GLM-4.6"), m("glm-4.5-air", "GLM-4.5-Air")},
-	"kimi": {m("kimi-k2.6", "Kimi K2.6"), m("kimi-k2.5", "Kimi K2.5"), m("kimi-k2.5-thinking", "Kimi K2.5 Thinking"), m("kimi-latest", "Kimi Latest")},
+	"kimi":   {m("kimi-k2.6", "Kimi K2.6"), m("kimi-k2.5", "Kimi K2.5"), m("kimi-k2.5-thinking", "Kimi K2.5 Thinking"), m("kimi-latest", "Kimi Latest")},
 	"minimax": {
 		m("MiniMax-M2.7", "MiniMax M2.7"), m("MiniMax-M2.5", "MiniMax M2.5"), m("MiniMax-M2.1", "MiniMax M2.1"),
 		k("minimax-image-01", "MiniMax Image 01", core.ServiceImage),
@@ -144,7 +144,7 @@ var providerModels = map[string][]ModelSpec{
 		m("qwen3-coder-plus", "Qwen3 Coder Plus"),
 	},
 	"alicode-intl": {m("qwen3.5-plus", "Qwen3.5 Plus"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3-coder-plus", "Qwen3 Coder Plus")},
-	"xiaomi-mimo": {m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-omni", "MiMo V2 Omni"), m("mimo-v2-flash", "MiMo V2 Flash")},
+	"xiaomi-mimo":  {m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-omni", "MiMo V2 Omni"), m("mimo-v2-flash", "MiMo V2 Flash")},
 	"xiaomi-tokenplan": {
 		m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-pro", "MiMo V2 Pro"), m("mimo-v2-omni", "MiMo V2 Omni"),
 		k("mimo-v2-tts", "MiMo V2 TTS", core.ServiceTTS), k("mimo-v2.5-tts", "MiMo V2.5 TTS", core.ServiceTTS),
@@ -181,8 +181,15 @@ var providerModels = map[string][]ModelSpec{
 		m("deepseek-3.2", "Kiro DeepSeek 3.2"), m("qwen3-coder-next", "Kiro Qwen3 Coder Next"),
 		m("glm-5", "Kiro GLM 5"), m("MiniMax-M2.5", "Kiro MiniMax M2.5"),
 	},
-	"opencode-go": {m("kimi-k2.6", "Kimi K2.6"), m("glm-5.1", "GLM 5.1"), m("qwen3.6-plus", "Qwen 3.6 Plus")},
-	"ollama": {m("gpt-oss:120b", "GPT OSS 120B"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3.5", "Qwen3.5")},
+	"qoder": {
+		m("auto", "Auto"), m("ultimate", "Ultimate"), m("performance", "Performance"),
+		m("efficient", "Efficient"), m("lite", "Lite"),
+		m("qmodel", "Q Model"), m("qmodel_latest", "Q Model (Latest)"),
+		m("dmodel", "D Model"), m("dfmodel", "DF Model"),
+		m("gm51model", "GM 5.1 Model"), m("kmodel", "K Model"), m("mmodel", "M Model"),
+	},
+	"opencode-go":  {m("kimi-k2.6", "Kimi K2.6"), m("glm-5.1", "GLM 5.1"), m("qwen3.6-plus", "Qwen 3.6 Plus")},
+	"ollama":       {m("gpt-oss:120b", "GPT OSS 120B"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3.5", "Qwen3.5")},
 	"ollama-local": {m("llama3.2", "Llama 3.2"), m("qwen2.5-coder", "Qwen 2.5 Coder")},
 	"gemini": {
 		m("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"), m("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
@@ -308,9 +315,9 @@ type QuotaEntry struct {
 
 // QuotaResult holds the upstream quota info for an account.
 type QuotaResult struct {
-	PlanName string        `json:"plan_name,omitempty"`
-	Quotas   []QuotaEntry  `json:"quotas"`
-	Message  string        `json:"message,omitempty"`
+	PlanName string       `json:"plan_name,omitempty"`
+	Quotas   []QuotaEntry `json:"quotas"`
+	Message  string       `json:"message,omitempty"`
 }
 
 // QuotaSource is implemented by connectors that can fetch upstream quota/usage

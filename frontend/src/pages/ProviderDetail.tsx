@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
+import { QoderConnectModal } from "../components/QoderConnectModal";
 import { useToast } from "../components/Toast";
 import {
   Card,
@@ -80,6 +81,7 @@ export function ProviderDetailPage() {
   const [error, setError] = useState("");
   const [oauthOpen, setOauthOpen] = useState(false);
   const [kiroOpen, setKiroOpen] = useState(false);
+  const [qoderOpen, setQoderOpen] = useState(false);
   const [addKeyOpen, setAddKeyOpen] = useState(false);
 
   // Model search and pagination
@@ -294,7 +296,8 @@ export function ProviderDetailPage() {
   }
 
   const isKiro = provider.id === "kiro";
-  const supportsManualConnect = !isKiro && (
+  const isQoder = provider.id === "qoder";
+  const supportsManualConnect = !isKiro && !isQoder && (
     provider.auth_modes.includes("api_key") ||
     provider.auth_modes.includes("none") ||
     !oauthProvider
@@ -353,7 +356,13 @@ export function ProviderDetailPage() {
                     Connect Kiro
                   </Button>
                 )}
-                {!isKiro && oauthProvider && (
+                {isQoder && (
+                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setQoderOpen(true)}>
+                    <Plug className="h-3.5 w-3.5" />
+                    Connect Qoder
+                  </Button>
+                )}
+                {!isKiro && !isQoder && oauthProvider && (
                   <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setOauthOpen(true)}>
                     <Plug className="h-3.5 w-3.5" />
                     Connect {provider.display_name}
@@ -538,6 +547,7 @@ export function ProviderDetailPage() {
         <ConnectModal provider={oauthProvider} onClose={() => setOauthOpen(false)} />
       )}
       {kiroOpen && <KiroConnectModal onClose={() => setKiroOpen(false)} />}
+      {qoderOpen && <QoderConnectModal onClose={() => setQoderOpen(false)} />}
       {addKeyOpen && (
         <AddApiKeyModal
           provider={provider}

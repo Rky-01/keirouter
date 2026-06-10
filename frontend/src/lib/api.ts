@@ -829,6 +829,15 @@ export const api = {
       label,
     }),
 
+  // Qoder connect flow (PKCE device-token poll). Mounted under /qoder (not
+  // /oauth/qoder) to avoid the chi /oauth/{provider} route collision. The flow
+  // generates a PKCE pair + nonce locally, opens the Qoder account picker in
+  // the browser, then polls until the user authorizes.
+  qoderDeviceStart: () =>
+    request<DeviceCode>("POST", "/qoder/device-start", {}),
+  qoderDevicePoll: (deviceCode: string, label?: string) =>
+    request<OAuthPollResult>("POST", "/qoder/device-poll", { device_code: deviceCode, label }),
+
   // System monitoring.
   systemMonitor: () => request<SystemSnapshot>("GET", "/system"),
   systemHistory: () => request<SystemHistory>("GET", "/system/history"),
