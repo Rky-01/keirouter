@@ -19,7 +19,7 @@ const accountColumns = `id, tenant_id, provider, label, auth_kind,
 	token_wrapped_dek, token_ciphertext,
 	refresh_wrapped_dek, refresh_ciphertext,
 	token_expires_at, metadata, priority, backoff_level, disabled, cooldown_until,
-	proxy_pool_id, created_at, updated_at`
+	proxy_pool_id, needs_reconnect, created_at, updated_at`
 
 // SetBackoffLevel updates the exponential backoff level for an account.
 func (r *AccountRepo) SetBackoffLevel(ctx context.Context, id string, level int) error {
@@ -39,7 +39,7 @@ func (r *AccountRepo) ResetBackoffLevel(ctx context.Context, id string) error {
 // Create inserts a new account.
 func (r *AccountRepo) Create(ctx context.Context, a Account) error {
 	q := r.db.rebind(`INSERT INTO accounts (` + accountColumns + `)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		a.ID, a.TenantID, a.Provider, a.Label, string(a.AuthKind),
 		nullString(a.SecretWrappedDEK), nullString(a.SecretCiphertext),
@@ -47,6 +47,7 @@ func (r *AccountRepo) Create(ctx context.Context, a Account) error {
 		nullString(a.RefreshWrappedDEK), nullString(a.RefreshCiphertext),
 		nullTime(a.TokenExpiresAt), a.Metadata, a.Priority, a.BackoffLevel,
 		boolToInt(a.Disabled), nullTime(a.CooldownUntil), a.ProxyPoolID,
+		boolToInt(a.NeedsReconnect),
 		formatTime(a.CreatedAt), formatTime(a.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("store: create account: %w", err)
@@ -91,11 +92,13 @@ func (r *AccountRepo) SetCooldown(ctx context.Context, id string, until time.Tim
 }
 
 // UpdateTokens replaces the sealed OAuth tokens and expiry after a refresh.
+// It also clears needs_reconnect since a successful refresh means the token is
+// valid again.
 func (r *AccountRepo) UpdateTokens(ctx context.Context, a Account) error {
 	q := r.db.rebind(`UPDATE accounts SET
 		token_wrapped_dek = ?, token_ciphertext = ?,
 		refresh_wrapped_dek = ?, refresh_ciphertext = ?,
-		token_expires_at = ?, updated_at = ?
+		token_expires_at = ?, needs_reconnect = 0, updated_at = ?
 		WHERE id = ?`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		nullString(a.TokenWrappedDEK), nullString(a.TokenCiphertext),
@@ -130,9 +133,12 @@ func (r *AccountRepo) ClearExpiredCooldowns(ctx context.Context) (int64, error) 
 // ClearProviderCooldowns clears cooldown and backoff for all accounts of a
 // given provider within a tenant. Called when a user reconnects a provider so
 // stale cooldowns from a previous session don't block the fresh account.
+// Also clears needs_reconnect since a successful reconnect means the provider
+// is accessible again.
 func (r *AccountRepo) ClearProviderCooldowns(ctx context.Context, tenantID, provider string) error {
-	q := r.db.rebind(`UPDATE accounts SET cooldown_until = NULL, backoff_level = 0, updated_at = ?
-		WHERE tenant_id = ? AND provider = ? AND cooldown_until IS NOT NULL`)
+	q := r.db.rebind(`UPDATE accounts SET cooldown_until = NULL, backoff_level = 0,
+		needs_reconnect = 0, updated_at = ?
+		WHERE tenant_id = ? AND provider = ? AND (cooldown_until IS NOT NULL OR needs_reconnect != 0)`)
 	_, err := r.db.sql.ExecContext(ctx, q, formatTime(time.Now()), tenantID, provider)
 	if err != nil {
 		return fmt.Errorf("store: clear provider cooldowns: %w", err)
@@ -144,6 +150,16 @@ func (r *AccountRepo) ClearProviderCooldowns(ctx context.Context, tenantID, prov
 func (r *AccountRepo) Delete(ctx context.Context, id string) error {
 	q := r.db.rebind(`DELETE FROM accounts WHERE id = ?`)
 	_, err := r.db.sql.ExecContext(ctx, q, id)
+	return err
+}
+
+// SetNeedsReconnect marks an account as needing re-authentication because its
+// OAuth refresh token was permanently rejected by the upstream. When flag is
+// true the dispatcher will skip the account; the dashboard shows a "Reconnect"
+// badge.
+func (r *AccountRepo) SetNeedsReconnect(ctx context.Context, id string, flag bool) error {
+	q := r.db.rebind(`UPDATE accounts SET needs_reconnect = ?, updated_at = ? WHERE id = ?`)
+	_, err := r.db.sql.ExecContext(ctx, q, boolToInt(flag), formatTime(time.Now()), id)
 	return err
 }
 
@@ -169,27 +185,28 @@ func (r *AccountRepo) queryList(ctx context.Context, q string, args ...any) ([]A
 // shared Scan signature.
 func scanAccountRow(scan func(dest ...any) error) (Account, error) {
 	var (
-		a            Account
-		authKind     string
-		secretDEK    sql.NullString
-		secretCT     sql.NullString
-		tokenDEK     sql.NullString
-		tokenCT      sql.NullString
-		refreshDEK   sql.NullString
-		refreshCT    sql.NullString
-		tokenExpires sql.NullString
-		backoffLevel int
-		cooldown     sql.NullString
-		disabled     int
-		proxyPoolID  sql.NullString
-		createdRaw   string
-		updatedRaw   string
+		a              Account
+		authKind       string
+		secretDEK      sql.NullString
+		secretCT       sql.NullString
+		tokenDEK       sql.NullString
+		tokenCT        sql.NullString
+		refreshDEK     sql.NullString
+		refreshCT      sql.NullString
+		tokenExpires   sql.NullString
+		backoffLevel   int
+		cooldown       sql.NullString
+		disabled       int
+		proxyPoolID    sql.NullString
+		needsReconnect int
+		createdRaw     string
+		updatedRaw     string
 	)
 	err := scan(
 		&a.ID, &a.TenantID, &a.Provider, &a.Label, &authKind,
 		&secretDEK, &secretCT, &tokenDEK, &tokenCT, &refreshDEK, &refreshCT,
 		&tokenExpires, &a.Metadata, &a.Priority, &backoffLevel, &disabled, &cooldown,
-		&proxyPoolID, &createdRaw, &updatedRaw,
+		&proxyPoolID, &needsReconnect, &createdRaw, &updatedRaw,
 	)
 	if err != nil {
 		return Account{}, err
@@ -204,6 +221,7 @@ func scanAccountRow(scan func(dest ...any) error) (Account, error) {
 	a.BackoffLevel = backoffLevel
 	a.Disabled = disabled != 0
 	a.ProxyPoolID = proxyPoolID.String
+	a.NeedsReconnect = needsReconnect != 0
 	a.CreatedAt = parseTime(createdRaw)
 	a.UpdatedAt = parseTime(updatedRaw)
 	if tokenExpires.Valid {

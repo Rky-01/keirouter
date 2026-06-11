@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -198,16 +198,23 @@ export function ProviderDetailPage() {
   const [testingAll, setTestingAll] = useState(false);
 
   // runTest probes a single account's credentials and records the result.
-  // Returns true when the credential is valid.
+  // Returns true when the credential is valid. On failure, refetches the
+  // account list so server-side state changes (e.g. needs_reconnect) appear
+  // immediately.
   const runTest = async (accountId: string): Promise<boolean> => {
     setTestResults((prev) => ({ ...prev, [accountId]: { status: "testing" } }));
     try {
       const res = await api.testAccount(accountId);
       const ok = res.status === "ok";
       setTestResults((prev) => ({ ...prev, [accountId]: { status: ok ? "ok" : "error", message: res.message } }));
+      if (!ok) {
+        // Refetch accounts so needs_reconnect flag is picked up.
+        qc.invalidateQueries({ queryKey: ["accounts"] });
+      }
       return ok;
     } catch (e) {
       setTestResults((prev) => ({ ...prev, [accountId]: { status: "error", message: (e as Error).message } }));
+      qc.invalidateQueries({ queryKey: ["accounts"] });
       return false;
     }
   };
@@ -423,6 +430,15 @@ export function ProviderDetailPage() {
               saving={updateRouting.isPending}
               onUpdate={(patch) => updateRouting.mutate(patch)}
             />
+          )}
+          {myAccounts.some((a) => a.needs_reconnect) && (
+            <div className="flex items-start gap-2.5 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-6 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
+              <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                One or more accounts have a revoked OAuth token and cannot be refreshed.
+                Delete the affected account and reconnect to restore access.
+              </span>
+            </div>
           )}
           {accounts.isLoading ? (
             <Spinner />
@@ -764,6 +780,15 @@ function AccountRow({
             <span className="text-sm font-medium">{a.label || a.provider}</span>
             <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API Key"}</Badge>
             {a.disabled && <Badge tone="danger">disabled</Badge>}
+            {a.needs_reconnect && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                title="The OAuth refresh token was revoked by the provider. Delete this account and reconnect."
+              >
+                <RefreshCw className="h-3 w-3" />
+                reconnect required
+              </span>
+            )}
             {testResult?.status === "ok" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
                 ✓ ok

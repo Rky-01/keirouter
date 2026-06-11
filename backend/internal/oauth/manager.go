@@ -61,6 +61,14 @@ func (m *TokenManager) EnsureFresh(ctx context.Context, acc store.Account) (stor
 		tokens, err = cfg.Refresh(ctx, refreshToken)
 	}
 	if err != nil {
+		// Permanent refresh failures (token_revoked, invalid_grant, etc.) mean
+		// the refresh token itself is dead. Mark the account so the dashboard
+		// shows a "Reconnect Required" badge and the dispatcher skips it.
+		if IsPermanentRefresh(err) {
+			if setErr := m.accounts.SetNeedsReconnect(ctx, acc.ID, true); setErr != nil {
+				return acc, fmt.Errorf("oauth: mark reconnect: %w (original: %w)", setErr, err)
+			}
+		}
 		return acc, fmt.Errorf("oauth: refresh failed for account %s: %w", acc.ID, err)
 	}
 
@@ -72,6 +80,63 @@ func (m *TokenManager) EnsureFresh(ctx context.Context, acc store.Account) (stor
 
 	// Seal the new tokens into the account. Passing nil Metadata preserves the
 	// existing provider metadata.
+	if err := m.vault.Seal(&acc, vault.NewSecret{
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    expiresAt,
+	}); err != nil {
+		return acc, fmt.Errorf("oauth: seal refreshed token: %w", err)
+	}
+	acc.TokenExpiresAt = expiresAt
+
+	if err := m.accounts.UpdateTokens(ctx, acc); err != nil {
+		return acc, fmt.Errorf("oauth: persist refreshed token: %w", err)
+	}
+	return acc, nil
+}
+
+// ForceRefresh unconditionally refreshes an OAuth account's access token,
+// bypassing the local expiry check. Used when the upstream API rejects the
+// current token even though it hasn't reached its local expiry (tokens can be
+// invalidated server-side before expiry).
+func (m *TokenManager) ForceRefresh(ctx context.Context, acc store.Account) (store.Account, error) {
+	if m == nil || m.vault == nil || m.accounts == nil {
+		return acc, fmt.Errorf("oauth: token manager not configured")
+	}
+	if acc.AuthKind != store.AuthOAuth {
+		return acc, fmt.Errorf("oauth: account %s is not OAuth", acc.ID)
+	}
+
+	refreshToken, err := m.vault.OpenRefreshToken(acc)
+	if err != nil {
+		return acc, fmt.Errorf("oauth: no refresh token for account %s: %w", acc.ID, err)
+	}
+
+	var tokens *Tokens
+	if acc.Provider == "kiro" {
+		tokens, err = refreshKiro(ctx, acc, refreshToken)
+	} else {
+		cfg, ok := ConfigFor(acc.Provider)
+		if !ok {
+			return acc, fmt.Errorf("oauth: no refresh config for provider %s", acc.Provider)
+		}
+		tokens, err = cfg.Refresh(ctx, refreshToken)
+	}
+	if err != nil {
+		if IsPermanentRefresh(err) {
+			if setErr := m.accounts.SetNeedsReconnect(ctx, acc.ID, true); setErr != nil {
+				return acc, fmt.Errorf("oauth: mark reconnect: %w (original: %w)", setErr, err)
+			}
+		}
+		return acc, fmt.Errorf("oauth: refresh failed for account %s: %w", acc.ID, err)
+	}
+
+	var expiresAt *time.Time
+	if tokens.ExpiresIn > 0 {
+		t := time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+		expiresAt = &t
+	}
+
 	if err := m.vault.Seal(&acc, vault.NewSecret{
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,

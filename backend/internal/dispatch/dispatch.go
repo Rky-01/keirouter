@@ -86,6 +86,7 @@ type ConnectorSource interface {
 // are used as-is. The oauth.TokenManager implements this.
 type TokenRefresher interface {
 	EnsureFresh(ctx context.Context, acc store.Account) (store.Account, error)
+	ForceRefresh(ctx context.Context, acc store.Account) (store.Account, error)
 }
 
 // RoutingSource provides model-level cooldowns and chain rotation state.
@@ -220,6 +221,12 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 			// Account-level cooldown (global cooldown from NoteFailure).
 			if acc.CooldownUntil != nil && acc.CooldownUntil.After(now) {
 				lastReason = fmt.Sprintf("account %s on cooldown", acc.ID)
+				continue
+			}
+			// Skip accounts whose OAuth refresh token was permanently rejected;
+			// they need the user to re-authenticate before they can serve traffic.
+			if acc.NeedsReconnect {
+				lastReason = fmt.Sprintf("account %s needs reconnection (refresh token revoked)", acc.ID)
 				continue
 			}
 			// Model-level cooldown: skip this account only for this model.

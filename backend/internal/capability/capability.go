@@ -73,6 +73,20 @@ var rules = []rule{
 	// Kiro / CodeWhisperer.
 	{"kiro", []core.Capability{core.CapToolCalling}, false},
 	{"codewhisperer", []core.Capability{core.CapToolCalling}, false},
+
+	// Qoder (coding assistant platform). Model IDs are generic tier names,
+	// so we use exact matches to avoid false positives with other providers.
+	{"auto", []core.Capability{core.CapToolCalling, core.CapLongContext}, true},
+	{"ultimate", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, true},
+	{"performance", []core.Capability{core.CapToolCalling, core.CapLongContext}, true},
+	{"efficient", []core.Capability{core.CapToolCalling, core.CapLongContext}, true},
+	{"lite", []core.Capability{core.CapToolCalling}, true},
+	{"qmodel", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"dmodel", []core.Capability{core.CapToolCalling, core.CapReasoning}, false},
+	{"dfmodel", []core.Capability{core.CapToolCalling, core.CapReasoning}, false},
+	{"gm51model", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, true},
+	{"kmodel", []core.Capability{core.CapToolCalling, core.CapLongContext}, true},
+	{"mmodel", []core.Capability{core.CapToolCalling, core.CapLongContext}, true},
 }
 
 // baseline is granted to every model.

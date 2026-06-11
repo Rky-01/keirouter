@@ -76,12 +76,17 @@ func (k *KeepAlive) refreshAll(ctx context.Context) {
 		return
 	}
 
-	var refreshed, skipped, failed int
+	var refreshed, skipped, failed, reconnect int
 	for _, acc := range accs {
 		if acc.AuthKind != store.AuthOAuth {
 			continue
 		}
 		if acc.Disabled {
+			continue
+		}
+		// Already flagged for reconnection; skip until the user re-authenticates.
+		if acc.NeedsReconnect {
+			reconnect++
 			continue
 		}
 		// Only refresh tokens that are near expiry or expired.
@@ -107,11 +112,12 @@ func (k *KeepAlive) refreshAll(ctx context.Context) {
 		)
 	}
 
-	if refreshed > 0 || failed > 0 {
+	if refreshed > 0 || failed > 0 || reconnect > 0 {
 		k.log.Info("oauth keepalive pass complete",
 			"refreshed", refreshed,
 			"skipped", skipped,
 			"failed", failed,
+			"needs_reconnect", reconnect,
 		)
 	}
 }

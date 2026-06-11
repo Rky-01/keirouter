@@ -154,6 +154,7 @@ export interface Account {
   priority: number;
   disabled: boolean;
   proxy_pool_id?: string;
+  needs_reconnect?: boolean;
   created_at: string;
 }
 

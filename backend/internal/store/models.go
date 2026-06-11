@@ -82,12 +82,13 @@ type Account struct {
 
 	TokenExpiresAt *time.Time
 
-	Metadata      string // JSON: base_url, region, project_id, ...
-	Priority      int
-	BackoffLevel  int // exponential backoff level for adaptive cooldowns
-	Disabled      bool
-	CooldownUntil *time.Time
-	ProxyPoolID   string // bound proxy pool id (empty = no proxy)
+	Metadata       string // JSON: base_url, region, project_id, ...
+	Priority       int
+	BackoffLevel   int // exponential backoff level for adaptive cooldowns
+	Disabled       bool
+	CooldownUntil  *time.Time
+	ProxyPoolID    string // bound proxy pool id (empty = no proxy)
+	NeedsReconnect bool   // true when the OAuth refresh token was permanently rejected (re-auth required)
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

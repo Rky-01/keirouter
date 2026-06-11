@@ -542,7 +542,8 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 			"id": a.ID, "provider": a.Provider, "label": a.Label,
 			"auth_kind": a.AuthKind, "priority": a.Priority,
 			"disabled": a.Disabled, "proxy_pool_id": a.ProxyPoolID,
-			"created_at": a.CreatedAt,
+			"needs_reconnect": a.NeedsReconnect,
+			"created_at":      a.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
@@ -789,6 +790,13 @@ func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 			"message":  verr.Error(),
 		})
 		return
+	}
+	// Validation passed: clear needs_reconnect if it was flagged, since a
+	// successful probe means the current credentials are accepted.
+	if acc.NeedsReconnect {
+		if err := s.accounts.SetNeedsReconnect(r.Context(), acc.ID, false); err != nil {
+			s.log.Warn("failed to clear needs_reconnect after successful test", "account", acc.ID, "err", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":       acc.ID,
@@ -2176,6 +2184,12 @@ func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataIn
 // accepted. Returns nil when validation passes or the connector does not support
 // it. No-auth accounts still run connector probes when available so local
 // endpoints such as Ollama/SearXNG can verify reachability.
+//
+// When the initial probe fails with an auth error and the account is OAuth,
+// it retries once after forcing a token refresh (even if the token hasn't
+// reached its local expiry — tokens can be invalidated server-side before
+// expiry). A permanent refresh failure marks the account as needing
+// reconnection.
 func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Account) error {
 	if s.conns == nil || s.vault == nil {
 		return nil // can't validate without registry + vault
@@ -2208,7 +2222,45 @@ func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Accou
 	// Apply a reasonable timeout for the probe.
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return v.Validate(probeCtx, creds)
+	probeErr := v.Validate(probeCtx, creds)
+	if probeErr == nil {
+		return nil
+	}
+
+	// If validation failed with an auth error on an OAuth account, the token
+	// may have been invalidated server-side before its local expiry. Force a
+	// refresh retry and mark the account if the refresh is permanently dead.
+	if acc.AuthKind == store.AuthOAuth && s.refresher != nil && s.accounts != nil {
+		pe := core.AsProviderError(probeErr)
+		if pe != nil && pe.Kind == core.ErrAuth {
+			if refreshed, rerr := s.refresher.ForceRefresh(ctx, acc); rerr != nil {
+				return probeErr // ForceRefresh already marks needs_reconnect if permanent
+			} else {
+				// Refresh succeeded — retry validation with the new token.
+				newCreds, cerr := s.vault.Open(refreshed)
+				if cerr == nil {
+					probeCtx2, cancel2 := context.WithTimeout(ctx, 15*time.Second)
+					defer cancel2()
+					retryErr := v.Validate(probeCtx2, newCreds)
+					if retryErr == nil {
+						// Clear needs_reconnect if it was set.
+						if acc.NeedsReconnect {
+							_ = s.accounts.SetNeedsReconnect(ctx, acc.ID, false)
+						}
+						return nil
+					}
+					// Retry still failed — mark for reconnect if it's an auth error.
+					retryPE := core.AsProviderError(retryErr)
+					if retryPE != nil && retryPE.Kind == core.ErrAuth {
+						_ = s.accounts.SetNeedsReconnect(ctx, acc.ID, true)
+					}
+					return retryErr
+				}
+			}
+		}
+	}
+
+	return probeErr
 }
 
 // decodeJSON decodes a request body into v, writing a 400 on failure. It

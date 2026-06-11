@@ -407,7 +407,10 @@ func (c ProviderConfig) PollDeviceToken(ctx context.Context, deviceCode, verifie
 	}
 }
 
-// Refresh exchanges a refresh token for a new access token.
+// Refresh exchanges a refresh token for a new access token. On failure the
+// returned error is a *RefreshError when the token endpoint responded, so
+// callers can use IsPermanentRefresh to decide whether re-authentication is
+// needed.
 func (c ProviderConfig) Refresh(ctx context.Context, refreshToken string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("oauth: no refresh token available")
@@ -420,9 +423,12 @@ func (c ProviderConfig) Refresh(ctx context.Context, refreshToken string) (*Toke
 		form.Set("client_secret", c.ClientSecret)
 	}
 
-	raw, err := c.tokenRequest(ctx, c.refreshURL(), form)
+	raw, status, err := c.tokenRequestStatus(ctx, c.refreshURL(), form)
 	if err != nil {
 		return nil, err
+	}
+	if status >= 400 {
+		return nil, classifyRefreshError(raw, status)
 	}
 	t, err := mapTokenResponse(raw)
 	if err != nil {
