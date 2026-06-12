@@ -1,8 +1,10 @@
 package transform
 
 import (
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
+	"bytes"
 	"fmt"
+
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -252,7 +254,7 @@ func renderAntBlocks(m core.Message) []antBlock {
 				Type:  "tool_use",
 				ID:    p.ToolCall.ID,
 				Name:  p.ToolCall.Name,
-				Input: p.ToolCall.Arguments,
+				Input: normalizeAntToolInputRaw(p.ToolCall.Arguments),
 			})
 		case core.PartToolResult:
 			content, _ := json.Marshal(p.ToolResult.Content)
@@ -296,6 +298,30 @@ func appendAntMessage(msgs []antMessage, role string, raw json.RawMessage, block
 		return msgs
 	}
 	return append(msgs, antMessage{Role: role, Content: raw})
+}
+
+func normalizeAntToolInputRaw(raw json.RawMessage) json.RawMessage {
+	if antToolInputIsObject(raw) {
+		return raw
+	}
+	return json.RawMessage(`{}`)
+}
+
+func normalizeAntToolInputValue(raw json.RawMessage) any {
+	raw = normalizeAntToolInputRaw(raw)
+	var input map[string]any
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return map[string]any{}
+	}
+	return input
+}
+
+func antToolInputIsObject(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || !json.Valid(raw) {
+		return false
+	}
+	return raw[0] == '{'
 }
 
 // ---- response parsing -------------------------------------------------------
@@ -358,10 +384,8 @@ func (AnthropicCodec) RenderResponse(resp *core.ChatResponse) ([]byte, error) {
 		case core.PartThinking:
 			content = append(content, map[string]any{"type": "thinking", "thinking": p.Text})
 		case core.PartToolCall:
-			var input any
-			_ = json.Unmarshal(p.ToolCall.Arguments, &input)
 			content = append(content, map[string]any{
-				"type": "tool_use", "id": p.ToolCall.ID, "name": p.ToolCall.Name, "input": input,
+				"type": "tool_use", "id": p.ToolCall.ID, "name": p.ToolCall.Name, "input": normalizeAntToolInputValue(p.ToolCall.Arguments),
 			})
 		}
 	}

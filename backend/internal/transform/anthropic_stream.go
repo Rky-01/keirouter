@@ -205,17 +205,20 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 				"type":  "content_block_start",
 				"index": state.ToolIndex,
 				"content_block": map[string]any{
-					"type": "tool_use",
-					"id":   chunk.ToolCall.ID,
-					"name": chunk.ToolCall.Name,
+					"type":  "tool_use",
+					"id":    chunk.ToolCall.ID,
+					"name":  chunk.ToolCall.Name,
+					"input": map[string]any{},
 				},
 			}))
 		}
 
-		// Emit argument deltas (skip empty/initial "{}").
+		// Emit argument deltas (skip empty ones). Partial JSON fragments
+		// from upstream streaming are not individually valid objects, so
+		// they must not be normalized — the client reassembles them.
 		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
 			args := string(chunk.ToolCall.Arguments)
-			if args != "" && args != "{}" {
+			if args != "" && args != "{}" && args != "[]" {
 				events = append(events, antEvent("content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": state.ToolIndex,

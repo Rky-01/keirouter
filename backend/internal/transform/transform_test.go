@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -160,6 +161,122 @@ func TestAnthropic_ParseStreamEvents(t *testing.T) {
 	require.GreaterOrEqual(t, len(chunks), 1)
 	require.Equal(t, core.ChunkFinish, chunks[0].Type)
 	require.Equal(t, core.FinishStop, chunks[0].FinishReason)
+}
+
+func TestAnthropic_RenderResponse_ToolInputAlwaysObject(t *testing.T) {
+	resp := &core.ChatResponse{
+		ID:    "msg1",
+		Model: "claude-x",
+		Message: core.Message{
+			Role: core.RoleAssistant,
+			Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "toolu_1", Name: "Read", Arguments: nil}},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "toolu_2", Name: "Read", Arguments: json.RawMessage(`[]`)}},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "toolu_3", Name: "Read", Arguments: json.RawMessage(`{"file_path":"README.md"}`)}},
+			},
+		},
+		FinishReason: core.FinishToolCalls,
+	}
+
+	body, err := AnthropicCodec{}.RenderResponse(resp)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	content := parsed["content"].([]any)
+
+	firstInput := content[0].(map[string]any)["input"]
+	require.IsType(t, map[string]any{}, firstInput, "nil tool args must render as object")
+	require.Empty(t, firstInput.(map[string]any))
+
+	secondInput := content[1].(map[string]any)["input"]
+	require.IsType(t, map[string]any{}, secondInput, "array tool args must render as object")
+	require.Empty(t, secondInput.(map[string]any))
+
+	thirdInput := content[2].(map[string]any)["input"].(map[string]any)
+	require.Equal(t, "README.md", thirdInput["file_path"])
+}
+
+func TestAnthropic_RenderRequest_ToolInputAlwaysObject(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-x",
+		Messages: []core.Message{{
+			Role: core.RoleAssistant,
+			Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "toolu_1", Name: "Read", Arguments: json.RawMessage(`null`)}},
+			},
+		}},
+	}
+
+	body, err := AnthropicCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	msgs := parsed["messages"].([]any)
+	blocks := msgs[0].(map[string]any)["content"].([]any)
+	input := blocks[0].(map[string]any)["input"]
+
+	require.IsType(t, map[string]any{}, input)
+	require.Empty(t, input.(map[string]any))
+}
+
+func TestAnthropic_RenderStreamChunk_ArgumentDeltasPassedThrough(t *testing.T) {
+	state := &StreamState{Model: "claude-x", MessageID: "msg1"}
+
+	// First chunk: opens the tool_use block (ID + Name).
+	openEvents, err := AnthropicCodec{}.RenderStreamChunk(core.StreamChunk{
+		Type:  core.ChunkToolCall,
+		Index: 0,
+		ToolCall: &core.ToolCall{
+			ID:        "toolu_1",
+			Name:      "Bash",
+			Arguments: json.RawMessage(``),
+		},
+	}, state)
+	require.NoError(t, err)
+	require.Len(t, openEvents, 2) // message_start + content_block_start
+
+	// Subsequent chunks: partial JSON fragments must pass through verbatim.
+	fragments := []string{`{"com`, `mand":"`, `ls -la`, `"}`}
+	for _, frag := range fragments {
+		deltaEvents, err := AnthropicCodec{}.RenderStreamChunk(core.StreamChunk{
+			Type:  core.ChunkToolCall,
+			Index: 0,
+			ToolCall: &core.ToolCall{
+				Arguments: json.RawMessage(frag),
+			},
+		}, state)
+		require.NoError(t, err)
+		require.Len(t, deltaEvents, 1, "partial JSON fragment must produce one event")
+		require.Contains(t, string(deltaEvents[0]), `"input_json_delta"`)
+		require.Contains(t, string(deltaEvents[0]), `"partial_json"`)
+	}
+}
+
+func TestAnthropic_RenderStreamChunk_ToolInputAlwaysObject(t *testing.T) {
+	state := &StreamState{Model: "claude-x", MessageID: "msg1"}
+	events, err := AnthropicCodec{}.RenderStreamChunk(core.StreamChunk{
+		Type:  core.ChunkToolCall,
+		Index: 0,
+		ToolCall: &core.ToolCall{
+			ID:        "toolu_1",
+			Name:      "Read",
+			Arguments: json.RawMessage(`[]`),
+		},
+	}, state)
+	require.NoError(t, err)
+	require.Len(t, events, 2)
+
+	var start map[string]any
+	data := strings.TrimPrefix(strings.Split(string(events[1]), "\n")[1], "data: ")
+	require.NoError(t, json.Unmarshal([]byte(data), &start))
+
+	block := start["content_block"].(map[string]any)
+	input := block["input"]
+	require.IsType(t, map[string]any{}, input)
+	require.Empty(t, input.(map[string]any))
+	require.NotContains(t, string(events[1]), `"partial_json":[]`)
 }
 
 // Stream re-render: canonical text chunks rendered to OpenAI SSE must start with
