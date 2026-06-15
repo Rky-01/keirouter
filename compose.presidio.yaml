@@ -1,0 +1,21 @@
+services:
+  keirouter:
+    depends_on:
+      presidio-analyzer:
+        condition: service_healthy
+    environment:
+      KEIROUTER_GUARDRAILS__PII__PRESIDIO_ANALYZER_URL: "http://presidio-analyzer:3000"
+      KEIROUTER_GUARDRAILS__PII__PRESIDIO_TIMEOUT: ${KEIROUTER_PRESIDIO_TIMEOUT:-5s}
+      KEIROUTER_GUARDRAILS__PII__PRESIDIO_LANGUAGE: ${KEIROUTER_PRESIDIO_LANGUAGE:-en}
+
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    restart: unless-stopped
+    ports:
+      - "${PRESIDIO_ANALYZER_PORT:-5001}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s

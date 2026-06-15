@@ -24,6 +24,7 @@ type auditStore interface {
 type AuditWriter struct {
 	store auditStore
 	log   *slog.Logger
+	hub   *LogHub
 
 	buf chan store.GuardrailLog
 
@@ -50,6 +51,9 @@ type AuditWriterConfig struct {
 	BufferSize    int
 	FlushInterval time.Duration
 	FlushSize     int
+	// Hub, if set, receives every successfully-flushed row so the gateway's
+	// SSE stream can fan out audit events to dashboard clients.
+	Hub *LogHub
 }
 
 // NewAuditWriter starts a background writer. The caller MUST call Stop on
@@ -70,6 +74,7 @@ func NewAuditWriter(s auditStore, log *slog.Logger, cfg AuditWriterConfig) *Audi
 	w := &AuditWriter{
 		store:         s,
 		log:           log,
+		hub:           cfg.Hub,
 		buf:           make(chan store.GuardrailLog, cfg.BufferSize),
 		flushInterval: cfg.FlushInterval,
 		flushSize:     cfg.FlushSize,
@@ -151,6 +156,12 @@ func (w *AuditWriter) run() {
 		defer cancel()
 		if err := w.store.BatchInsert(ctx, batch); err != nil {
 			w.log.Warn("guardrails audit batch insert failed", "err", err, "count", len(batch))
+		} else if w.hub != nil {
+			// Publish after successful insert so subscribers only see rows
+			// that actually landed in the database.
+			for _, e := range batch {
+				w.hub.Publish(e)
+			}
 		}
 		batch = batch[:0]
 	}

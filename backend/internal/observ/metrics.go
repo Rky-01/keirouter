@@ -31,6 +31,10 @@ type Metrics struct {
 	SlimBytesSaved  *prometheus.CounterVec // by rule
 	CavemanRequests prometheus.Counter     // requests with caveman active
 	TerseRequests   prometheus.Counter     // requests with terse active
+
+	// Guardrails activity.
+	GuardrailDecisions *prometheus.CounterVec   // by detector + action
+	GuardrailEval      *prometheus.HistogramVec // per-detector eval latency
 }
 
 // New builds a Metrics instance backed by a dedicated registry. Using a private
@@ -101,6 +105,15 @@ func New() *Metrics {
 			Name: "keirouter_terse_requests_total",
 			Help: "Total requests with terse output compression active.",
 		}),
+		GuardrailDecisions: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "keirouter_guardrail_decisions_total",
+			Help: "Guardrail decisions, labeled by detector and action.",
+		}, []string{"detector", "action"}),
+		GuardrailEval: factory.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "keirouter_guardrail_eval_seconds",
+			Help:    "Per-detector evaluation latency in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.0005, 2, 12), // 0.5ms .. ~2s
+		}, []string{"detector"}),
 	}
 	return m
 }
@@ -176,4 +189,19 @@ func (m *Metrics) RecordCavemanActivation() {
 // RecordTerseActivation notes a request where terse was active.
 func (m *Metrics) RecordTerseActivation() {
 	m.TerseRequests.Inc()
+}
+
+// RecordGuardrailDecision counts a guardrail decision by detector + action.
+// Passing the empty action is treated as "allow" so callers can use the
+// raw Decision.Action value without massaging it.
+func (m *Metrics) RecordGuardrailDecision(detector, action string) {
+	if action == "" {
+		action = "allow"
+	}
+	m.GuardrailDecisions.WithLabelValues(detector, action).Inc()
+}
+
+// RecordGuardrailLatency records how long a detector took to evaluate.
+func (m *Metrics) RecordGuardrailLatency(detector string, seconds float64) {
+	m.GuardrailEval.WithLabelValues(detector).Observe(seconds)
 }

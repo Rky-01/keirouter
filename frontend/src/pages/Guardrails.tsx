@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, Fragment } from "react";
+import { useEffect, useMemo, useState, useRef, Fragment } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Shield,
@@ -11,12 +11,21 @@ import {
   Plus,
   Trash2,
   Save,
+  Sparkles,
+  Download,
+  Upload,
+  Lock,
+  Radio,
 } from "lucide-react";
 import {
   api,
+  connectGuardrailLogStream,
+  type GuardrailBundle,
+  type GuardrailLogEntry,
   type GuardrailPolicy,
   type GuardrailPolicyConfig,
   type GuardrailScope,
+  type GuardrailTemplate,
 } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
@@ -79,6 +88,7 @@ const SCOPE_BY_TAB: Record<Exclude<Tab, "logs">, GuardrailScope> = {
 
 export function GuardrailsPage() {
   const [tab, setTab] = useHashTab("global");
+  const [importing, setImporting] = useState(false);
 
   return (
     <div>
@@ -86,11 +96,217 @@ export function GuardrailsPage() {
         title="Guardrails"
         description="Content-safety policies layered global → provider → model → chain → API key. Most specific wins."
       />
+      <div className="mb-3 flex items-center gap-2">
+        <Button variant="secondary" onClick={() => setImporting(true)}>
+          <Upload className="h-4 w-4 mr-1" /> Import
+        </Button>
+        <ExportButton />
+      </div>
       <div className="mb-4">
         <TabBar tabs={TABS} active={tab} onChange={setTab} />
       </div>
+      {tab === "global" && <TenantFlagsCard />}
       {tab === "logs" ? <LogsTab /> : <ScopeTab scope={SCOPE_BY_TAB[tab]} />}
+      {importing && <ImportModal onClose={() => setImporting(false)} />}
     </div>
+  );
+}
+
+// ---- Tenant-wide GDPR / external-engines toggle -----------------------------
+
+function TenantFlagsCard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const flags = useQuery({
+    queryKey: ["guardrails", "tenant-flags"],
+    queryFn: () => api.getGuardrailTenantFlags(),
+    staleTime: 30_000,
+  });
+
+  const update = useMutation({
+    mutationFn: (allow: boolean) =>
+      api.putGuardrailTenantFlags({ allow_external_engines: allow }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["guardrails", "tenant-flags"] });
+      toast.success("Tenant flags updated");
+    },
+    onError: (e) => {
+      toast.error(e instanceof Error ? e.message : "Failed to update");
+    },
+  });
+
+  const allow = flags.data?.allow_external_engines ?? true;
+
+  return (
+    <Card className="mb-3">
+      <div className="px-5 py-4 flex items-start justify-between gap-4">
+        <div className="flex gap-3">
+          <div className="mt-1">
+            <Lock className="h-5 w-5 text-[var(--text-muted)]" />
+          </div>
+          <div>
+            <div className="text-sm font-medium">Allow external detector engines</div>
+            <p className="mt-1 text-xs text-[var(--text-muted)] max-w-2xl">
+              When off, every policy is forced back to its native engine — OpenAI Moderation,
+              Microsoft Presidio, and embedding-based topic matching are disabled tenant-wide.
+              Use this for GDPR / data-residency setups where prompt content must never leave
+              the KeiRouter process.
+              {!allow && (
+                <span className="block mt-1 text-rose-600 dark:text-rose-300 font-medium">
+                  External engines disabled — all detector traffic stays inside this container.
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+        <Toggle checked={allow} onChange={(v) => update.mutate(v)} />
+      </div>
+    </Card>
+  );
+}
+
+// ---- Export / Import --------------------------------------------------------
+
+function ExportButton() {
+  const toast = useToast();
+  const onClick = async () => {
+    try {
+      const bundle = await api.exportGuardrails();
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `keirouter-guardrails-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${bundle.policies.length} policies`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Export failed");
+    }
+  };
+  return (
+    <Button variant="secondary" onClick={onClick}>
+      <Download className="h-4 w-4 mr-1" /> Export all
+    </Button>
+  );
+}
+
+function ImportModal({ onClose }: { onClose: () => void }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [raw, setRaw] = useState("");
+  const [result, setResult] = useState<{
+    imported: Array<{ name: string; scope: string; scope_id?: string }>;
+    skipped: Array<{ name: string; reason: string }>;
+  } | null>(null);
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      let bundle: GuardrailBundle;
+      try {
+        bundle = JSON.parse(raw) as GuardrailBundle;
+      } catch {
+        throw new Error("invalid JSON");
+      }
+      if (!Array.isArray(bundle.policies)) {
+        throw new Error("missing 'policies' array");
+      }
+      return api.importGuardrails(bundle);
+    },
+    onSuccess: (r) => {
+      setResult(r);
+      qc.invalidateQueries({ queryKey: ["guardrails"] });
+      toast.success(
+        `Imported ${r.imported.length}${r.skipped.length ? `, ${r.skipped.length} skipped` : ""}`,
+      );
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Import failed"),
+  });
+
+  const onFile = async (f: File) => {
+    setRaw(await f.text());
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Import guardrails bundle" maxWidth="max-w-2xl">
+      <div className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+        <p className="text-xs text-[var(--text-muted)]">
+          Paste a previously-exported JSON bundle, or load one from disk. Policies are upserted
+          by name within their scope; existing rows with the same scope_id are overwritten.
+        </p>
+        <div className="flex gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onFile(f);
+            }}
+          />
+          <Button variant="secondary" onClick={() => fileRef.current?.click()}>
+            <Upload className="h-4 w-4 mr-1" /> Choose file
+          </Button>
+        </div>
+        <textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          rows={12}
+          placeholder='{ "version": 1, "policies": [ ... ] }'
+          className="w-full font-mono text-xs px-3 py-2 rounded border border-[var(--border)] bg-transparent"
+        />
+        {result && (
+          <div className="text-xs space-y-2">
+            {result.imported.length > 0 && (
+              <div>
+                <div className="font-medium mb-1">Imported ({result.imported.length})</div>
+                <ul className="space-y-0.5 text-[var(--text-muted)]">
+                  {result.imported.map((p, i) => (
+                    <li key={i}>
+                      • {p.name} ({p.scope}
+                      {p.scope_id ? `/${p.scope_id}` : ""})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.skipped.length > 0 && (
+              <div>
+                <div className="font-medium mb-1 text-rose-600 dark:text-rose-300">
+                  Skipped ({result.skipped.length})
+                </div>
+                <ul className="space-y-0.5 text-[var(--text-muted)]">
+                  {result.skipped.map((p, i) => (
+                    <li key={i}>
+                      • {p.name} — {p.reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+        <Button variant="secondary" onClick={onClose}>
+          {result ? "Close" : "Cancel"}
+        </Button>
+        {!result && (
+          <Button
+            onClick={() => submit.mutate()}
+            disabled={!raw.trim() || submit.isPending}
+          >
+            {submit.isPending ? "Importing..." : "Import bundle"}
+          </Button>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -312,6 +528,14 @@ function CreatePolicyModal({
   const [name, setName] = useState(scope === "global" ? "Global Guardrails" : "");
   const [scopeID, setScopeID] = useState("");
   const [config, setConfig] = useState<GuardrailPolicyConfig>({});
+  const [pickingTemplate, setPickingTemplate] = useState(false);
+
+  const onPickTemplate = (tpl: GuardrailTemplate) => {
+    setConfig(tpl.config);
+    if (!name.trim()) setName(tpl.name);
+    setPickingTemplate(false);
+    toast.success(`Loaded template: ${tpl.name}`);
+  };
 
   const create = useMutation({
     mutationFn: () =>
@@ -346,6 +570,11 @@ function CreatePolicyModal({
             <ScopeIDSelector scope={scope} value={scopeID} onChange={setScopeID} />
           )}
         </div>
+        <div>
+          <Button variant="secondary" onClick={() => setPickingTemplate(true)}>
+            <Sparkles className="h-4 w-4 mr-1" /> Start from template…
+          </Button>
+        </div>
         <GuardrailEditor value={config} onChange={setConfig} />
       </div>
       <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
@@ -358,6 +587,57 @@ function CreatePolicyModal({
         >
           <Save className="h-4 w-4 mr-1" />
           {create.isPending ? "Creating..." : "Create policy"}
+        </Button>
+      </div>
+      {pickingTemplate && (
+        <TemplatePickerModal
+          onClose={() => setPickingTemplate(false)}
+          onPick={onPickTemplate}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function TemplatePickerModal({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void;
+  onPick: (tpl: GuardrailTemplate) => void;
+}) {
+  const templates = useQuery({
+    queryKey: ["guardrail-templates"],
+    queryFn: () => api.listGuardrailTemplates(),
+    staleTime: Infinity,
+  });
+  return (
+    <Modal open onClose={onClose} title="Start from a template" maxWidth="max-w-xl">
+      <div className="px-6 py-5 space-y-3 max-h-[70vh] overflow-y-auto">
+        {templates.isLoading ? (
+          <div className="py-6 flex justify-center">
+            <Spinner />
+          </div>
+        ) : (
+          (templates.data?.templates ?? []).map((tpl) => (
+            <button
+              key={tpl.id}
+              type="button"
+              onClick={() => onPick(tpl)}
+              className="w-full text-left rounded border border-[var(--border)] hover:border-indigo-400/60 hover:bg-indigo-500/[0.04] transition px-4 py-3"
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-indigo-500/80" />
+                <span className="font-medium">{tpl.name}</span>
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">{tpl.description}</p>
+            </button>
+          ))
+        )}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
         </Button>
       </div>
     </Modal>
@@ -383,6 +663,12 @@ function LogsTab() {
   const [detector, setDetector] = useState("");
   const [action, setAction] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [liveOn, setLiveOn] = useState(true);
+  const [liveStatus, setLiveStatus] = useState<"connected" | "off">("off");
+  const [liveRows, setLiveRows] = useState<GuardrailLogEntry[]>([]);
+
+  // Initial / refreshed fetch. Polling is disabled once the SSE connection
+  // is up so the database isn't hammered on top of the live stream.
   const logs = useQuery({
     queryKey: ["guardrail-logs", detector, action],
     queryFn: () =>
@@ -391,10 +677,42 @@ function LogsTab() {
         action: action || undefined,
         limit: 200,
       }),
-    refetchInterval: 5000,
+    refetchInterval: liveOn ? false : 5000,
   });
 
-  const rows = logs.data?.logs ?? [];
+  // SSE subscription. We hold the streamed rows in local state and merge them
+  // with the fetched page so newly-fired decisions appear instantly. Filters
+  // are applied client-side to the live rows because the SSE endpoint emits
+  // every audit row tenant-wide.
+  useEffect(() => {
+    if (!liveOn) {
+      setLiveStatus("off");
+      return;
+    }
+    const close = connectGuardrailLogStream((row) => {
+      setLiveStatus("connected");
+      setLiveRows((prev) => {
+        // Drop matching id to dedupe with the initial fetch on reconnect.
+        const filtered = prev.filter((r) => r.id !== row.id);
+        return [row, ...filtered].slice(0, 200);
+      });
+    });
+    return () => {
+      setLiveStatus("off");
+      close();
+    };
+  }, [liveOn]);
+
+  const fetched = logs.data?.logs ?? [];
+  // Merge: live rows first (newest), then fetched rows that aren't already in
+  // live. Filter live rows on the client to honor the detector/action filters.
+  const rows = useMemo(() => {
+    const liveFiltered = liveRows.filter(
+      (r) => (!detector || r.detector === detector) && (!action || r.action === action),
+    );
+    const liveIDs = new Set(liveFiltered.map((r) => r.id));
+    return [...liveFiltered, ...fetched.filter((r) => !liveIDs.has(r.id))].slice(0, 200);
+  }, [liveRows, fetched, detector, action]);
   const toggle = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -407,9 +725,36 @@ function LogsTab() {
     <Card>
       <CardHeader
         title="Audit Logs"
-        description="Recent guardrail decisions. Auto-refreshes every 5 seconds. Click a row to see what was detected."
+        description={
+          liveOn
+            ? "Recent guardrail decisions. Live-streaming via SSE — new rows appear instantly."
+            : "Recent guardrail decisions. Polling every 5s. Toggle live to stream over SSE."
+        }
         action={
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            <button
+              type="button"
+              onClick={() => setLiveOn((v) => !v)}
+              className={`text-xs px-2 py-1 rounded border inline-flex items-center gap-1.5 ${
+                liveOn
+                  ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300"
+                  : "bg-white/5 border-white/10 text-gray-600 dark:text-gray-300"
+              }`}
+              title={
+                liveOn
+                  ? liveStatus === "connected"
+                    ? "Connected to SSE stream"
+                    : "Connecting…"
+                  : "Click to enable live updates"
+              }
+            >
+              <Radio
+                className={`h-3 w-3 ${
+                  liveOn && liveStatus === "connected" ? "animate-pulse" : ""
+                }`}
+              />
+              {liveOn ? "Live" : "Polling"}
+            </button>
             <Select value={detector} onChange={(e) => setDetector(e.target.value)}>
               <option value="">All detectors</option>
               <option value="pii">PII</option>

@@ -49,15 +49,16 @@ import (
 
 // App is the assembled application, ready to serve.
 type App struct {
-	cfg            config.Config
-	log            *slog.Logger
-	db             *store.DB
-	accounts       *store.AccountRepo
-	server         *http.Server
-	keepAlive      *oauth.KeepAlive
-	guardrailAudit *guardrails.AuditWriter
-	meter          *meter.Meter
-	healthChecker  *healthcheck.Checker
+	cfg                config.Config
+	log                *slog.Logger
+	db                 *store.DB
+	accounts           *store.AccountRepo
+	server             *http.Server
+	keepAlive          *oauth.KeepAlive
+	guardrailAudit     *guardrails.AuditWriter
+	guardrailRetention *guardrails.RetentionSweeper
+	meter              *meter.Meter
+	healthChecker      *healthcheck.Checker
 }
 
 // Build constructs the application from configuration. It opens the database,
@@ -225,7 +226,11 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// chain → apikey. Resolver caches lookups for 30s; audit writer drains a
 	// buffered channel to the guardrail_logs table.
 	guardrailResolver := guardrails.NewResolver(db.Guardrails(), 30*time.Second)
-	guardrailAudit := guardrails.NewAuditWriter(db.GuardrailLogs(), log, guardrails.AuditWriterConfig{})
+	// Audit log hub: AuditWriter publishes successfully-flushed rows here so
+	// the dashboard's Logs tab can subscribe via SSE for near-real-time
+	// updates without polling.
+	guardrailLogHub := guardrails.NewLogHub()
+	guardrailAudit := guardrails.NewAuditWriter(db.GuardrailLogs(), log, guardrails.AuditWriterConfig{Hub: guardrailLogHub})
 	// Toxicity: native engine ships unconditionally; OpenAI Moderation is
 	// wired only when an API key is configured.
 	toxCfg := toxicity.Config{}
@@ -238,18 +243,43 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		}
 		log.Info("guardrails: toxicity OpenAI engine enabled")
 	}
+	// PII: native recognizers always ship; Presidio sidecar is wired only
+	// when an analyzer URL is configured. Policies opt in per-tenant via
+	// PIIConfig.Engine = "presidio".
+	piiCfg := pii.Config{}
+	if cfg.Guardrails.PII.PresidioAnalyzerURL != "" {
+		piiCfg.Presidio = pii.NewPresidioEngine(pii.PresidioConfig{
+			AnalyzerURL: cfg.Guardrails.PII.PresidioAnalyzerURL,
+			Timeout:     cfg.Guardrails.PII.PresidioTimeout,
+			Language:    cfg.Guardrails.PII.PresidioLanguage,
+		})
+		log.Info("guardrails: PII Presidio engine enabled", "analyzer", cfg.Guardrails.PII.PresidioAnalyzerURL)
+	}
+	// Per-tenant guardrails settings (currently just allow_external_engines).
+	guardrailTenantPolicy := guardrails.NewSettingsTenantPolicy(db.Settings(), 30*time.Second)
 	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
 		Resolver: guardrailResolver,
 		Audit:    guardrailAudit,
 		Detectors: []guardrails.Detector{
-			pii.New(),
+			pii.NewWithConfig(piiCfg),
 			injection.New(),
 			topics.New(topics.Config{Embedder: embedder}),
 			toxicity.New(toxCfg),
 			bias.New(),
 		},
-		Logger: log,
+		Logger:       log,
+		Metrics:      metrics,
+		TenantPolicy: guardrailTenantPolicy,
 	})
+	// Retention sweeper: deletes guardrail_logs older than N days.
+	var guardrailRetention *guardrails.RetentionSweeper
+	if cfg.Guardrails.AuditRetentionDays > 0 {
+		guardrailRetention = guardrails.NewRetentionSweeper(db.GuardrailLogs(), log, guardrails.RetentionConfig{
+			Retention: time.Duration(cfg.Guardrails.AuditRetentionDays) * 24 * time.Hour,
+		})
+		guardrailRetention.Start()
+		log.Info("guardrails: audit retention sweeper started", "days", cfg.Guardrails.AuditRetentionDays)
+	}
 
 	limiter := limits.NewMemory(limits.MemoryConfig{
 		Enabled:         cfg.Limits.Enabled,
@@ -330,9 +360,11 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		ProxyNotifier:   proxyNotifier,
 		RateLimiter:     limiter,
 		Refresher:       tokenRefresher,
-		Guardrails:      guardrailEngine,
-		GuardrailRepo:   db.Guardrails(),
-		GuardrailLogs:   db.GuardrailLogs(),
+		Guardrails:           guardrailEngine,
+		GuardrailRepo:        db.Guardrails(),
+		GuardrailLogs:        db.GuardrailLogs(),
+		GuardrailHub:         guardrailLogHub,
+		GuardrailTenantFlags: guardrailTenantPolicy,
 		Health:          db.Health(),
 		HealthChecker:   healthChecker,
 	})
@@ -349,7 +381,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, meter: mtr, healthChecker: healthChecker}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker}, nil
 }
 
 // seedFreeAccounts auto-creates a default account for providers that are free
@@ -454,6 +486,9 @@ func (a *App) Run(ctx context.Context) error {
 			return err
 		}
 		// Drain pending guardrail audit and usage rows before closing the DB.
+		if a.guardrailRetention != nil {
+			a.guardrailRetention.Stop(2 * time.Second)
+		}
 		if a.guardrailAudit != nil {
 			a.guardrailAudit.Stop(5 * time.Second)
 		}

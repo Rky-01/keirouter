@@ -174,6 +174,20 @@ type DataConfig struct {
 // sub-configs to enable an external engine on a per-detector basis.
 type GuardrailsConfig struct {
 	Toxicity ToxicityEngineConfig `koanf:"toxicity"`
+	PII      PIIEngineConfig      `koanf:"pii"`
+	// AuditRetentionDays drops guardrail_logs older than N days via a
+	// background sweeper. Zero / negative disables retention sweeping (the
+	// table grows unbounded). 90 is a sensible operational default.
+	AuditRetentionDays int `koanf:"audit_retention_days"`
+}
+
+// PIIEngineConfig configures the optional Microsoft Presidio HTTP analyzer
+// engine. When AnalyzerURL is empty the engine stays disabled and policies
+// that select engine="presidio" fall back to native.
+type PIIEngineConfig struct {
+	PresidioAnalyzerURL string        `koanf:"presidio_analyzer_url"`
+	PresidioTimeout     time.Duration `koanf:"presidio_timeout"`
+	PresidioLanguage    string        `koanf:"presidio_language"`
 }
 
 // ToxicityEngineConfig configures the optional OpenAI Moderation engine. When

@@ -1072,7 +1072,54 @@ export const api = {
   },
   testGuardrail: (input: { text: string; config?: GuardrailPolicyConfig }) =>
     request<GuardrailTestResult>("POST", "/guardrails/test", input),
+
+  listGuardrailTemplates: () =>
+    request<{ templates: GuardrailTemplate[] }>("GET", "/guardrails/templates"),
+
+  exportGuardrails: (scope?: string) =>
+    request<GuardrailBundle>(
+      "GET",
+      `/guardrails/export${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`,
+    ),
+
+  importGuardrails: (bundle: GuardrailBundle) =>
+    request<{
+      imported: Array<{ name: string; scope: string; scope_id?: string }>;
+      skipped: Array<{ name: string; reason: string }>;
+    }>("POST", "/guardrails/import", bundle),
+
+  getGuardrailTenantFlags: () =>
+    request<{ allow_external_engines: boolean }>(
+      "GET",
+      "/guardrails/tenant-flags",
+    ),
+
+  putGuardrailTenantFlags: (flags: { allow_external_engines?: boolean }) =>
+    request<{ allow_external_engines: boolean }>(
+      "PUT",
+      "/guardrails/tenant-flags",
+      flags,
+    ),
 };
+
+export interface GuardrailTemplate {
+  id: string;
+  name: string;
+  description: string;
+  config: GuardrailPolicyConfig;
+}
+
+export interface GuardrailBundle {
+  version: number;
+  exported_at?: string;
+  policies: Array<{
+    name: string;
+    scope: string;
+    scope_id?: string;
+    enabled: boolean;
+    config: GuardrailPolicyConfig;
+  }>;
+}
 
 // ---- SSE usage stream --------------------------------------------------------
 
@@ -1123,6 +1170,51 @@ export function connectUsageStream(onEvent: (ev: UsageEvent) => void): () => voi
 
   connect();
 
+  return () => {
+    closed = true;
+    es?.close();
+  };
+}
+
+/**
+ * Subscribe to the guardrails audit-log SSE stream. New rows arrive as they
+ * land in the database (the AuditWriter publishes after each successful batch
+ * insert). Returns a cleanup function that closes the connection.
+ */
+export function connectGuardrailLogStream(
+  onEvent: (row: GuardrailLogEntry) => void,
+): () => void {
+  let es: EventSource | null = null;
+  let retryCount = 0;
+  const maxRetries = 10;
+  let closed = false;
+
+  function connect() {
+    if (closed) return;
+    es = new EventSource("/api/guardrails/logs/stream");
+    es.onopen = () => {
+      retryCount = 0;
+    };
+    es.onmessage = (msg) => {
+      try {
+        const row = JSON.parse(msg.data) as GuardrailLogEntry;
+        onEvent(row);
+      } catch {
+        /* ignore malformed events */
+      }
+    };
+    es.onerror = () => {
+      es?.close();
+      if (closed) return;
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * 2 ** retryCount, 30000);
+        setTimeout(connect, delay);
+        retryCount++;
+      }
+    };
+  }
+
+  connect();
   return () => {
     closed = true;
     es?.close();

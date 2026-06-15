@@ -4,10 +4,26 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/store"
 )
+
+// MetricsRecorder is the minimal Prometheus sink the engine emits to. It maps
+// directly to observ.Metrics. Keeping it as an interface avoids dragging the
+// observ package into the guardrails dependency graph.
+type MetricsRecorder interface {
+	RecordGuardrailDecision(detector, action string)
+	RecordGuardrailLatency(detector string, seconds float64)
+}
+
+// TenantPolicy lets the engine enforce per-tenant overrides that are NOT part
+// of a detector policy — currently just the GDPR "allow_external_engines"
+// switch which forces detectors back to their native engine when set false.
+type TenantPolicy interface {
+	AllowExternalEngines(ctx context.Context, tenantID string) bool
+}
 
 // Engine orchestrates registered detectors against a request. It runs them
 // in registration order, stops on the first block, applies masks in-place,
@@ -18,6 +34,8 @@ type Engine struct {
 	audit     *AuditWriter
 	detectors []Detector
 	log       *slog.Logger
+	metrics   MetricsRecorder
+	tenant    TenantPolicy
 }
 
 // EngineConfig collects engine dependencies.
@@ -26,6 +44,13 @@ type EngineConfig struct {
 	Audit     *AuditWriter
 	Detectors []Detector
 	Logger    *slog.Logger
+	// Metrics is optional; when set, the engine records per-detector decision
+	// counts + evaluation latency.
+	Metrics MetricsRecorder
+	// TenantPolicy is optional; when set, the engine enforces per-tenant
+	// overrides like the GDPR allow_external_engines switch before running
+	// detectors.
+	TenantPolicy TenantPolicy
 }
 
 // NewEngine builds an engine. Detectors run in slice order; callers should
@@ -40,6 +65,8 @@ func NewEngine(cfg EngineConfig) *Engine {
 		audit:     cfg.Audit,
 		detectors: cfg.Detectors,
 		log:       log,
+		metrics:   cfg.Metrics,
+		tenant:    cfg.TenantPolicy,
 	}
 }
 
@@ -61,6 +88,7 @@ func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
 		return Result{Action: ActionAllow}
 	}
 	policy := e.resolver.Effective(ctx, e.keyFor(req))
+	policy = e.applyTenantOverrides(ctx, req.Metadata.TenantID, policy)
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow}
 	}
@@ -69,16 +97,20 @@ func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
 	final := Result{Action: ActionAllow}
 
 	for _, d := range e.detectors {
+		start := time.Now()
 		dec, err := d.Inbound(ctx, in, policy)
+		e.recordLatency(d.Name(), start)
 		if err != nil {
 			e.log.Warn("guardrail detector error (inbound)", "detector", d.Name(), "err", err)
 			continue
 		}
 		if dec == nil || dec.Action == "" || dec.Action == ActionAllow {
+			e.recordDecision(d.Name(), ActionAllow)
 			continue
 		}
 		dec.Detector = d.Name()
 		dec.Direction = DirectionInbound
+		e.recordDecision(d.Name(), dec.Action)
 		e.logDecision(req, dec)
 
 		final.Decisions = append(final.Decisions, *dec)
@@ -100,30 +132,34 @@ func (e *Engine) Inbound(ctx context.Context, req *core.ChatRequest) Result {
 }
 
 // Outbound runs detectors against a finalized (non-streaming) response.
-// Streaming output is currently audited only at the end of the stream via
-// the same path — pipeline collects chunks into a final ChatResponse and
-// hands it back.
+// Streaming output is audited per-chunk via OutboundChunk plus a final pass
+// at stream completion.
 func (e *Engine) Outbound(ctx context.Context, req *core.ChatRequest, resp *core.ChatResponse) Result {
 	if e == nil || req == nil || resp == nil {
 		return Result{Action: ActionAllow}
 	}
 	policy := e.resolver.Effective(ctx, e.keyFor(req))
+	policy = e.applyTenantOverrides(ctx, req.Metadata.TenantID, policy)
 	if !policy.IsActive() {
 		return Result{Action: ActionAllow}
 	}
 	out := &OutboundResponse{Source: resp, Text: flattenResponse(resp), Streaming: false}
 	final := Result{Action: ActionAllow}
 	for _, d := range e.detectors {
+		start := time.Now()
 		dec, err := d.Outbound(ctx, out, policy)
+		e.recordLatency(d.Name(), start)
 		if err != nil {
 			e.log.Warn("guardrail detector error (outbound)", "detector", d.Name(), "err", err)
 			continue
 		}
 		if dec == nil || dec.Action == "" || dec.Action == ActionAllow {
+			e.recordDecision(d.Name(), ActionAllow)
 			continue
 		}
 		dec.Detector = d.Name()
 		dec.Direction = DirectionOutbound
+		e.recordDecision(d.Name(), dec.Action)
 		e.logDecision(req, dec)
 
 		final.Decisions = append(final.Decisions, *dec)
@@ -139,6 +175,103 @@ func (e *Engine) Outbound(ctx context.Context, req *core.ChatRequest, resp *core
 		}
 	}
 	return final
+}
+
+// OutboundChunk runs detectors against a partial response buffer accumulated
+// during streaming. The caller drives a sliding window: every N characters it
+// passes the window text and, if the result's Action is Mask, swaps in the
+// rewritten substring before forwarding the chunk to the client; if Block, it
+// cancels the stream.
+//
+// Detectors that only make sense on a complete response (bias scoring across
+// long-form text) return nil here and act on the final pass via Outbound at
+// stream end.
+func (e *Engine) OutboundChunk(ctx context.Context, req *core.ChatRequest, text string) Result {
+	if e == nil || req == nil || text == "" {
+		return Result{Action: ActionAllow}
+	}
+	policy := e.resolver.Effective(ctx, e.keyFor(req))
+	policy = e.applyTenantOverrides(ctx, req.Metadata.TenantID, policy)
+	if !policy.IsActive() {
+		return Result{Action: ActionAllow}
+	}
+	// Synthesize a minimal ChatResponse-shaped view so existing Outbound
+	// detectors can be reused without a separate per-chunk surface. The Source
+	// pointer is nil — detectors that touch Source must guard for the
+	// Streaming flag.
+	out := &OutboundResponse{Source: nil, Text: text, Streaming: true}
+	final := Result{Action: ActionAllow}
+	for _, d := range e.detectors {
+		start := time.Now()
+		dec, err := d.Outbound(ctx, out, policy)
+		e.recordLatency(d.Name(), start)
+		if err != nil {
+			e.log.Warn("guardrail detector error (outbound-chunk)", "detector", d.Name(), "err", err)
+			continue
+		}
+		if dec == nil || dec.Action == "" || dec.Action == ActionAllow {
+			continue
+		}
+		dec.Detector = d.Name()
+		dec.Direction = DirectionOutbound
+		e.recordDecision(d.Name(), dec.Action)
+		e.logDecision(req, dec)
+		final.Decisions = append(final.Decisions, *dec)
+		if rank(dec.Action) > rank(final.Action) {
+			final.Action = dec.Action
+			final.Reason = dec.Reason
+		}
+		if dec.Action == ActionBlock {
+			return final
+		}
+	}
+	return final
+}
+
+func (e *Engine) recordLatency(name string, start time.Time) {
+	if e.metrics == nil {
+		return
+	}
+	e.metrics.RecordGuardrailLatency(name, time.Since(start).Seconds())
+}
+
+func (e *Engine) recordDecision(name string, action Action) {
+	if e.metrics == nil {
+		return
+	}
+	if action == "" {
+		action = ActionAllow
+	}
+	e.metrics.RecordGuardrailDecision(name, string(action))
+}
+
+// applyTenantOverrides enforces tenant-wide flags before the policy reaches
+// detectors. Currently it implements the GDPR allow_external_engines switch:
+// when off, every engine selector is reset to its native default so no data
+// leaves the KeiRouter process.
+func (e *Engine) applyTenantOverrides(ctx context.Context, tenantID string, p Policy) Policy {
+	if e == nil || e.tenant == nil {
+		return p
+	}
+	if e.tenant.AllowExternalEngines(ctx, tenantID) {
+		return p
+	}
+	if p.PII != nil && p.PII.Engine != "" && p.PII.Engine != "native" {
+		clone := *p.PII
+		clone.Engine = "native"
+		p.PII = &clone
+	}
+	if p.Toxicity != nil && p.Toxicity.Engine != "" && p.Toxicity.Engine != "native" {
+		clone := *p.Toxicity
+		clone.Engine = "native"
+		p.Toxicity = &clone
+	}
+	if p.Topics != nil && p.Topics.Engine != "" && p.Topics.Engine != "keyword" {
+		clone := *p.Topics
+		clone.Engine = "keyword"
+		p.Topics = &clone
+	}
+	return p
 }
 
 // EffectivePolicy is a passthrough for the admin API and per-key UI preview.

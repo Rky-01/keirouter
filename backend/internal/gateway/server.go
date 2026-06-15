@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -76,9 +77,12 @@ type Server struct {
 	version         string
 	updates         *update.Checker
 	insightsCache   *ttlCache
-	guardrails      *guardrails.Engine
-	guardrailRepo   *store.GuardrailRepo
-	guardrailLogs   *store.GuardrailLogRepo
+	guardrails          *guardrails.Engine
+	guardrailRepo       *store.GuardrailRepo
+	guardrailLogs       *store.GuardrailLogRepo
+	guardrailHub        *guardrails.LogHub
+	guardrailTenantFlag *guardrails.SettingsTenantPolicy
+	guardrailTestRL     *guardrailTestRateLimiter
 	health          *store.HealthRepo
 	healthChecker   *healthcheck.Checker
 	router          chi.Router
@@ -119,9 +123,11 @@ type Deps struct {
 	ProxyNotifier   *ProxyNotifier
 	RateLimiter     interface{ SetEnabled(bool) }
 	Refresher       dispatch.TokenRefresher
-	Guardrails      *guardrails.Engine
-	GuardrailRepo   *store.GuardrailRepo
-	GuardrailLogs   *store.GuardrailLogRepo
+	Guardrails           *guardrails.Engine
+	GuardrailRepo        *store.GuardrailRepo
+	GuardrailLogs        *store.GuardrailLogRepo
+	GuardrailHub         *guardrails.LogHub
+	GuardrailTenantFlags *guardrails.SettingsTenantPolicy
 	Health          *store.HealthRepo
 	HealthChecker   *healthcheck.Checker
 }
@@ -180,9 +186,12 @@ func New(d Deps) *Server {
 		version:         d.Version,
 		updates:         d.Updates,
 		insightsCache:   newTTLCache(insightsCacheTTL),
-		guardrails:      d.Guardrails,
-		guardrailRepo:   d.GuardrailRepo,
-		guardrailLogs:   d.GuardrailLogs,
+		guardrails:          d.Guardrails,
+		guardrailRepo:       d.GuardrailRepo,
+		guardrailLogs:       d.GuardrailLogs,
+		guardrailHub:        d.GuardrailHub,
+		guardrailTenantFlag: d.GuardrailTenantFlags,
+		guardrailTestRL:     newGuardrailTestRateLimiter(10, time.Minute),
 		health:          d.Health,
 		healthChecker:   d.HealthChecker,
 	}
