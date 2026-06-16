@@ -40,6 +40,7 @@ export interface BrandingSettings {
 
 export interface EndpointSettings {
   rtk_enabled: boolean;
+  rtk_filter_level: string;
   caveman_enabled: boolean;
   caveman_level: string;
   terse_enabled: boolean;

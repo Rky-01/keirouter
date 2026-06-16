@@ -21,7 +21,7 @@ func TestApplyInjectsIntoEmptySystem(t *testing.T) {
 	if !strings.Contains(req.System, sentinel) {
 		t.Fatal("expected sentinel marker in system prompt")
 	}
-	if !strings.Contains(req.System, "terse caveman") {
+	if !strings.Contains(req.System, "smart caveman") {
 		t.Fatalf("expected full-level prompt, got %q", req.System)
 	}
 }
@@ -50,7 +50,7 @@ func TestApplyIdempotent(t *testing.T) {
 func TestLevelSelection(t *testing.T) {
 	cases := map[Level]string{
 		LevelLite:  "Keep grammar",
-		LevelFull:  "terse caveman",
+		LevelFull:  "smart caveman",
 		LevelUltra: "ultra-terse",
 	}
 	for level, want := range cases {
@@ -63,12 +63,74 @@ func TestLevelSelection(t *testing.T) {
 }
 
 func TestValidLevel(t *testing.T) {
-	for _, l := range []Level{LevelLite, LevelFull, LevelUltra} {
+	for _, l := range []Level{LevelLite, LevelFull, LevelUltra,
+		LevelWenyanLite, LevelWenyanFull, LevelWenyanUltra} {
 		if !ValidLevel(l) {
 			t.Errorf("expected %q to be valid", l)
 		}
 	}
 	if ValidLevel("bogus") {
 		t.Error("expected bogus level to be invalid")
+	}
+}
+
+func TestWenyanLevelSelection(t *testing.T) {
+	cases := map[Level]string{
+		LevelWenyanLite: "semi-classical",
+		LevelWenyanFull: "文言文",
+		LevelWenyanUltra: "classical Chinese feel",
+	}
+	for level, want := range cases {
+		req := &core.ChatRequest{}
+		Apply(req, Config{Enabled: true, Level: level})
+		if !strings.Contains(req.System, want) {
+			t.Errorf("level %q: expected %q in prompt, got %q", level, want, req.System)
+		}
+	}
+}
+
+func TestEnhancedFullPrompt(t *testing.T) {
+	p := promptFor(LevelFull)
+	for _, want := range []string{
+		"No tool-call narration",
+		"no decorative tables",
+		"Standard well-known tech acronyms",
+		"never invent new abbreviations",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("full prompt missing %q", want)
+		}
+	}
+}
+
+func TestEnhancedUltraPrompt(t *testing.T) {
+	p := promptFor(LevelUltra)
+	for _, want := range []string{
+		"prose words only",
+		"never real code symbols",
+		"Code symbols, function names, API names",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("ultra prompt missing %q", want)
+		}
+	}
+}
+
+func TestSharedBoundariesEnhanced(t *testing.T) {
+	for _, want := range []string{
+		"No self-reference",
+		"Preserve user's dominant language",
+		"ALWAYS keep technical terms",
+		"CLI commands",
+	} {
+		if !strings.Contains(sharedBoundaries, want) {
+			t.Errorf("sharedBoundaries missing %q", want)
+		}
+	}
+}
+
+func TestSharedAutoClarityEnhanced(t *testing.T) {
+	if !strings.Contains(sharedAutoClarity, "compression itself creates technical ambiguity") {
+		t.Error("sharedAutoClarity missing technical ambiguity condition")
 	}
 }

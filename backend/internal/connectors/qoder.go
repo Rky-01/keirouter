@@ -241,8 +241,9 @@ func resolveMaxTokens(req *core.ChatRequest, modelConfig json.RawMessage) int {
 	return maxTokens
 }
 
-// serializeTools converts core.Tool slice to []json.RawMessage for the Qoder
-// payload. Returns nil when no tools are defined.
+// serializeTools converts core.Tool slice to Qoder's OpenAI-compatible tool
+// format. Qoder validates that every tool has a function object, but also
+// rejects malformed/empty parameter schemas.
 func serializeTools(tools []core.Tool) []json.RawMessage {
 	if len(tools) == 0 {
 		return nil
@@ -254,10 +255,8 @@ func serializeTools(tools []core.Tool) []json.RawMessage {
 			"function": map[string]any{
 				"name":        t.Name,
 				"description": t.Description,
+				"parameters":  normalizeQoderToolSchema(t.Parameters),
 			},
-		}
-		if t.Parameters != nil {
-			toolJSON["function"].(map[string]any)["parameters"] = json.RawMessage(t.Parameters)
 		}
 		b, err := json.Marshal(toolJSON)
 		if err != nil {
@@ -267,6 +266,29 @@ func serializeTools(tools []core.Tool) []json.RawMessage {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func normalizeQoderToolSchema(raw json.RawMessage) json.RawMessage {
+	defaultSchema := json.RawMessage(`{"type":"object","properties":{}}`)
+	if len(raw) == 0 {
+		return defaultSchema
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return defaultSchema
+	}
+	if schema["type"] == nil {
+		schema["type"] = "object"
+	}
+	if schema["properties"] == nil {
+		schema["properties"] = map[string]any{}
+	}
+	out, err := json.Marshal(schema)
+	if err != nil {
+		return defaultSchema
 	}
 	return out
 }
@@ -513,7 +535,11 @@ func (c *Qoder) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cr
 			}
 
 			line := scanner.Text()
-			inner, ok := unwrapQoderSSELine(line)
+			inner, ok, qerr := unwrapQoderSSELineWithError(line, c.id, req.Model)
+			if qerr != nil {
+				out <- core.StreamChunk{Type: core.ChunkError, Err: qerr}
+				return
+			}
 			if !ok {
 				continue
 			}
@@ -637,33 +663,52 @@ type qoderSSEEnvelope struct {
 // Returns ("", false) for non-data lines or empty payloads.
 // Returns ("[DONE]", true) when the stream ends.
 func unwrapQoderSSELine(line string) (string, bool) {
+	inner, ok, _ := unwrapQoderSSELineWithError(line, "", "")
+	return inner, ok
+}
+
+func unwrapQoderSSELineWithError(line, provider, model string) (string, bool, error) {
 	line = strings.TrimRight(line, "\r")
 	if !strings.HasPrefix(line, "data:") {
-		return "", false
+		return "", false, nil
 	}
 	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	if data == "" {
-		return "", false
+		return "", false, nil
 	}
 	if data == "[DONE]" {
-		return "[DONE]", true
+		return "[DONE]", true, nil
 	}
 
 	var env qoderSSEEnvelope
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
-		return "", false
+		return "", false, nil
 	}
 	if env.StatusCodeValue != 0 && env.StatusCodeValue != 200 {
-		// Surface upstream errors as a [DONE] so the stream terminates.
-		return "[DONE]", true
+		kind := core.ErrUpstream
+		switch {
+		case env.StatusCodeValue == http.StatusUnauthorized || env.StatusCodeValue == http.StatusForbidden:
+			kind = core.ErrAuth
+		case env.StatusCodeValue == http.StatusTooManyRequests:
+			kind = core.ErrRateLimit
+		case env.StatusCodeValue >= 400 && env.StatusCodeValue < 500:
+			kind = core.ErrBadRequest
+		}
+		return "", false, &core.ProviderError{
+			Kind:       kind,
+			Provider:   provider,
+			Model:      model,
+			StatusCode: env.StatusCodeValue,
+			Message:    truncateError([]byte(env.Body)),
+		}
 	}
 	if env.Body == "" || env.Body == "[DONE]" {
 		if env.Body == "[DONE]" {
-			return "[DONE]", true
+			return "[DONE]", true, nil
 		}
-		return "", false
+		return "", false, nil
 	}
-	return env.Body, true
+	return env.Body, true, nil
 }
 
 // ListModels implements live model discovery by fetching the COSY-signed

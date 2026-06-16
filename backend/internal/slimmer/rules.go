@@ -20,8 +20,12 @@ func BuiltinRules() []Rule {
 		treeRule{},
 		lsRule{},
 		numberedReadRule{},
-		dedupLogRule{},
+		smartDedupLogRule{},
+		testRunnerRule{},
+		lintRule{},
+		containerRule{},
 		truncateRule{},
+		sourceCodeRule{},
 	}
 }
 
@@ -29,9 +33,9 @@ func BuiltinRules() []Rule {
 const (
 	diffHunkMaxLines   = 100
 	diffContextKeep    = 3
+	diffCompactMaxLines = 500
 	grepPerFileMax     = 10
 	findPerDirMax      = 10
-	statusMaxFiles     = 12
 	treeMaxLines       = 200
 	dedupMinLines      = 5
 	truncateHeadLines  = 60
@@ -62,10 +66,14 @@ func (gitDiffRule) Detect(probe string) float64 {
 
 // Compress trims oversized hunks while preserving every changed line and the
 // surrounding context up to diffContextKeep lines. File and hunk headers are
-// always kept so the model retains structure.
+// always kept so the model retains structure. For large diffs, a stat summary
+// is prepended.
 func (gitDiffRule) Compress(content string) (string, error) {
 	lines := strings.Split(content, "\n")
 	var out []string
+
+	// Collect stat info per-file before compression.
+	statSummary := buildDiffStatSummary(lines)
 
 	flushHunk := func(buf []string) {
 		if len(buf) <= diffHunkMaxLines {
@@ -114,7 +122,74 @@ func (gitDiffRule) Compress(content string) (string, error) {
 	if inHunk {
 		flushHunk(hunk)
 	}
+
+	// If compressed output is large, prepend stat summary.
+	if len(out) > diffCompactMaxLines && statSummary != "" {
+		// Keep stat + first diffCompactMaxLines lines of detail.
+		truncated := out
+		if len(truncated) > diffCompactMaxLines {
+			truncated = append(out[:diffCompactMaxLines],
+				fmt.Sprintf("… %d diff lines truncated (see stat summary above)", len(out)-diffCompactMaxLines))
+		}
+		out = append([]string{statSummary, ""}, truncated...)
+	} else if statSummary != "" && len(lines) > 100 {
+		// For moderately large diffs, prepend stat for context.
+		out = append([]string{statSummary, ""}, out...)
+	}
+
 	return strings.Join(out, "\n"), nil
+}
+
+// buildDiffStatSummary generates a stat-style summary from diff lines,
+// counting added (+) and removed (-) lines per file.
+func buildDiffStatSummary(lines []string) string {
+	type fileStat struct {
+		added   int
+		removed int
+	}
+	files := make(map[string]*fileStat)
+	var order []string
+	currentFile := ""
+
+	for _, l := range lines {
+		if strings.HasPrefix(l, "diff --git ") {
+			// Extract filename from "diff --git a/path b/path"
+			parts := strings.SplitN(l, " b/", 2)
+			if len(parts) == 2 {
+				currentFile = parts[1]
+				if _, exists := files[currentFile]; !exists {
+					files[currentFile] = &fileStat{}
+					order = append(order, currentFile)
+				}
+			}
+			continue
+		}
+		if currentFile == "" {
+			continue
+		}
+		fs := files[currentFile]
+		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") {
+			fs.added++
+		} else if strings.HasPrefix(l, "-") && !strings.HasPrefix(l, "---") {
+			fs.removed++
+		}
+	}
+
+	if len(order) == 0 {
+		return ""
+	}
+
+	var out []string
+	totalAdd, totalDel := 0, 0
+	for _, f := range order {
+		fs := files[f]
+		totalAdd += fs.added
+		totalDel += fs.removed
+		out = append(out, fmt.Sprintf(" %s | +%d -%d", f, fs.added, fs.removed))
+	}
+	out = append(out, fmt.Sprintf(" %d files changed, +%d -%d",
+		len(order), totalAdd, totalDel))
+	return strings.Join(out, "\n")
 }
 
 // ---- git-status -------------------------------------------------------------
@@ -149,7 +224,7 @@ func (gitStatusRule) Compress(content string) (string, error) {
 	overflow := 0
 	for _, l := range lines {
 		if reStatusEntry.MatchString(l) {
-			if kept < statusMaxFiles {
+			if kept < CapList {
 				out = append(out, l)
 				kept++
 			} else {
@@ -305,6 +380,9 @@ var lsNoiseDirs = map[string]struct{}{
 	"node_modules": {}, ".git": {}, "target": {}, "__pycache__": {},
 	".next": {}, "dist": {}, "build": {}, ".venv": {}, "venv": {},
 	".cache": {}, ".idea": {}, ".vscode": {}, ".DS_Store": {},
+	".turbo": {}, ".vercel": {}, ".pytest_cache": {}, ".mypy_cache": {},
+	".tox": {}, "env": {}, "coverage": {}, ".nyc_output": {},
+	"Thumbs.db": {}, ".vs": {}, ".eggs": {},
 }
 
 type lsRule struct{}
@@ -339,7 +417,7 @@ func (lsRule) Compress(content string) (string, error) {
 
 	for _, l := range lines {
 		name := strings.TrimSpace(l)
-		if _, noise := lsNoiseDirs[name]; noise {
+		if _, noise := lsNoiseDirs[name]; noise || strings.HasSuffix(name, ".egg-info") {
 			dropped++
 			continue
 		}
@@ -393,58 +471,6 @@ func (numberedReadRule) Compress(content string) (string, error) {
 		return content, nil
 	}
 	return headTailElide(lines, truncateHeadLines, truncateTailLines), nil
-}
-
-// ---- dedup-log --------------------------------------------------------------
-
-type dedupLogRule struct{}
-
-func (dedupLogRule) Name() string { return "dedup-log" }
-
-func (dedupLogRule) Detect(probe string) float64 {
-	if len(nonEmptyLines(probe)) >= dedupMinLines {
-		return 0.5 // generic fallback, just at threshold
-	}
-	return 0
-}
-
-// Compress collapses consecutive duplicate lines and blank-line streaks.
-func (dedupLogRule) Compress(content string) (string, error) {
-	lines := strings.Split(content, "\n")
-	var out []string
-	var prev string
-	run := 0
-	blankStreak := 0
-
-	flush := func() {
-		if run > 1 {
-			out = append(out, fmt.Sprintf("  ⟲ ×%d", run))
-		}
-		run = 0
-	}
-
-	for _, l := range lines {
-		if strings.TrimSpace(l) == "" {
-			flush()
-			prev = ""
-			if blankStreak < 1 {
-				out = append(out, l)
-			}
-			blankStreak++
-			continue
-		}
-		blankStreak = 0
-		if l == prev {
-			run++
-			continue
-		}
-		flush()
-		out = append(out, l)
-		prev = l
-		run = 1
-	}
-	flush()
-	return strings.Join(out, "\n"), nil
 }
 
 // ---- build-output -----------------------------------------------------------
@@ -511,6 +537,201 @@ func (truncateRule) Compress(content string) (string, error) {
 		return content, nil
 	}
 	return headTailElide(lines, truncateHeadLines, truncateTailLines), nil
+}
+
+// ---- test-runner output -----------------------------------------------------
+
+var (
+	reTestFail = regexp.MustCompile(`(?i)(FAIL|FAILED|❌|✗|✘)`)
+	reTestPass = regexp.MustCompile(`(?i)(PASS|PASSED|✓|✔|ok\s)`)
+	reTestSummary = regexp.MustCompile(`(?i)(Tests?:|Test Suites?:|test result:|FAILED|failed)`)
+)
+
+type testRunnerRule struct{}
+
+func (testRunnerRule) Name() string { return "test-runner" }
+
+func (testRunnerRule) Detect(probe string) float64 {
+	if strings.Contains(probe, "test result:") ||
+		strings.Contains(probe, "Test Suites:") ||
+		strings.Contains(probe, "Tests: ") ||
+		(reTestFail.MatchString(probe) && reTestPass.MatchString(probe)) {
+		return 0.75
+	}
+	return 0
+}
+
+// Compress keeps only failures and summary lines, dropping passing tests.
+func (testRunnerRule) Compress(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var failures, summary, passing []string
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+
+		// Always keep summary lines.
+		if reTestSummary.MatchString(trimmed) {
+			summary = append(summary, l)
+			continue
+		}
+
+		// Keep failures, drop passes.
+		if reTestFail.MatchString(trimmed) && !reTestPass.MatchString(trimmed) {
+			failures = append(failures, l)
+		} else if reTestPass.MatchString(trimmed) {
+			passing = append(passing, trimmed)
+		} else {
+			// Context lines — keep if near a failure.
+			failures = append(failures, l)
+		}
+	}
+
+	var out []string
+	if len(summary) > 0 {
+		out = append(out, summary...)
+		out = append(out, "")
+	}
+	if len(failures) > 0 {
+		if len(failures) > CapErrors {
+			out = append(out, failures[:CapErrors]...)
+			out = append(out, fmt.Sprintf("… %d more failure lines", len(failures)-CapErrors))
+		} else {
+			out = append(out, failures...)
+		}
+	}
+	if len(passing) > 0 {
+		out = append(out, fmt.Sprintf("(%d passing tests omitted)", len(passing)))
+	}
+
+	result := strings.Join(out, "\n")
+	if len(result) >= len(content) || result == "" {
+		return content, nil
+	}
+	return result, nil
+}
+
+// ---- lint / compiler output ------------------------------------------------
+
+var reLintError = regexp.MustCompile(`(?i)(error\s*(TS|E\[|\[)|error:|✖|✗|error\s+\d)`)
+
+type lintRule struct{}
+
+func (lintRule) Name() string { return "lint-output" }
+
+func (lintRule) Detect(probe string) float64 {
+	if reLintError.MatchString(probe) ||
+		strings.Contains(probe, "warning:") ||
+		strings.Contains(probe, "error TS") {
+		return 0.7
+	}
+	return 0
+}
+
+// Compress groups errors by file and caps per-file entries.
+func (lintRule) Compress(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	perFile := map[string][]string{}
+	var order []string
+	var headerLines []string
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+
+		// Detect file:line:col pattern to group by file.
+		file := extractLintFile(trimmed)
+		if file != "" {
+			if _, seen := perFile[file]; !seen {
+				order = append(order, file)
+			}
+			perFile[file] = append(perFile[file], l)
+		} else if !reLintError.MatchString(trimmed) && !strings.Contains(trimmed, "warning:") {
+			// Non-error/warning line — likely header or summary.
+			headerLines = append(headerLines, l)
+		} else {
+			// Error/warning without file context — keep as-is.
+			headerLines = append(headerLines, l)
+		}
+	}
+
+	var out []string
+	out = append(out, headerLines...)
+
+	for _, file := range order {
+		entries := perFile[file]
+		if len(entries) > CapWarnings {
+			out = append(out, entries[:CapWarnings]...)
+			out = append(out, fmt.Sprintf("  … %d more issues in %s", len(entries)-CapWarnings, file))
+		} else {
+			out = append(out, entries...)
+		}
+	}
+
+	result := strings.Join(out, "\n")
+	if len(result) >= len(content) || result == "" {
+		return content, nil
+	}
+	return result, nil
+}
+
+// extractLintFile extracts a filename from a lint/compiler error line.
+// Matches patterns like "path/to/file.ext:10:5:" or "path/to/file.ext(10,5):".
+var reLintFile = regexp.MustCompile(`^([^\s:]+\.\w+)[:\(]`)
+
+func extractLintFile(line string) string {
+	m := reLintFile.FindStringSubmatch(line)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// ---- container list (docker ps, kubectl get pods) --------------------------
+
+var reContainerHeader = regexp.MustCompile(`(?i)^CONTAINER ID|^NAME\s+READY|^NAME\s+STATUS`)
+
+type containerRule struct{}
+
+func (containerRule) Name() string { return "container-list" }
+
+func (containerRule) Detect(probe string) float64 {
+	if reContainerHeader.MatchString(probe) {
+		return 0.7
+	}
+	return 0
+}
+
+// Compress caps container list entries while keeping the header.
+func (containerRule) Compress(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	if len(lines) <= CapList+1 {
+		return content, nil
+	}
+
+	// Keep header + capped entries.
+	header := lines[0]
+	entries := lines[1:]
+	nonEmpty := nonEmptyLines(strings.Join(entries, "\n"))
+
+	if len(nonEmpty) <= CapList {
+		return content, nil
+	}
+
+	var out []string
+	out = append(out, header)
+	out = append(out, nonEmpty[:CapList]...)
+	out = append(out, fmt.Sprintf("… %d more containers", len(nonEmpty)-CapList))
+
+	result := strings.Join(out, "\n")
+	if len(result) >= len(content) {
+		return content, nil
+	}
+	return result, nil
 }
 
 // ---- shared helpers ---------------------------------------------------------

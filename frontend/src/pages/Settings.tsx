@@ -58,11 +58,17 @@ const cavemanOptions = [
   { value: "lite", label: "Gentle" },
   { value: "full", label: "Balanced" },
   { value: "ultra", label: "Strong" },
+  { value: "wenyan-lite", label: "Wenyan" },
+  { value: "wenyan-full", label: "Wenyan Full" },
+  { value: "wenyan-ultra", label: "Wenyan Ultra" },
 ];
 const cavemanHints: Record<string, string> = {
   lite: "Drop filler, keep full sentences.",
   full: "Terse caveman style, fragments OK.",
   ultra: "Maximum compression, telegraphic.",
+  "wenyan-lite": "Semi-classical, concise phrasing.",
+  "wenyan-full": "Full 文言文 style, 80-90% reduction.",
+  "wenyan-ultra": "Extreme abbreviation + classical feel.",
 };
 
 const terseOptions = [
@@ -74,6 +80,17 @@ const terseHints: Record<string, string> = {
   light: "Trim pleasantries.",
   medium: "Bullets, minimal prose.",
   aggressive: "Bare technical minimum.",
+};
+
+const rtkFilterOptions = [
+  { value: "none", label: "Off" },
+  { value: "minimal", label: "Minimal" },
+  { value: "aggressive", label: "Aggressive" },
+];
+const rtkFilterHints: Record<string, string> = {
+  none: "No source code comment stripping.",
+  minimal: "Strip comments and docstrings only.",
+  aggressive: "Strip comments, docstrings, blank lines, and trailing whitespace.",
 };
 
 const isRoundRobin = (strategy: string) =>
@@ -158,6 +175,19 @@ function SavingTab({
           <span className="text-sm font-medium">Enable RTK token saver</span>
           <Toggle checked={local.rtk_enabled} onChange={(v) => update({ rtk_enabled: v })} />
         </div>
+        {local.rtk_enabled && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Source code filter</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{rtkFilterHints[local.rtk_filter_level || "none"]}</p>
+            </div>
+            <SegmentedControl
+              value={local.rtk_filter_level || "none"}
+              onChange={(v) => update({ rtk_filter_level: v })}
+              options={rtkFilterOptions}
+            />
+          </div>
+        )}
       </Card>
 
       <Card>

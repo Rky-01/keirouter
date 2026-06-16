@@ -47,6 +47,9 @@ type Config struct {
 	Enabled bool
 	// Disabled lists rule names to skip even when Enabled.
 	Disabled []string
+	// FilterLevel controls source-code comment stripping intensity.
+	// FilterNone (default) disables it for backward compatibility.
+	FilterLevel FilterLevel
 }
 
 // Stats summarizes a compression pass over one request.
@@ -108,11 +111,24 @@ func (e *Engine) Compress(req *core.ChatRequest, cfg Config) *Stats {
 			stats.BytesBefore += len(original)
 
 			compressed, rule := e.compressOne(original, disabled)
+
+			// Secondary pass: source code comment filtering after primary rule.
+			if cfg.FilterLevel > FilterNone && len(compressed) > minCompressBytes {
+				if filtered, err := stripComments(compressed, cfg.FilterLevel); err == nil &&
+					len(filtered) < len(compressed) && filtered != "" {
+					compressed = filtered
+				}
+			}
+
 			stats.BytesAfter += len(compressed)
 
 			if rule != "" && len(compressed) < len(original) {
 				parts[pi].ToolResult.Content = compressed
 				stats.Hits = append(stats.Hits, Hit{Rule: rule, Saved: len(original) - len(compressed)})
+				changed = true
+			} else if len(compressed) < len(original) {
+				parts[pi].ToolResult.Content = compressed
+				stats.Hits = append(stats.Hits, Hit{Rule: "source-code", Saved: len(original) - len(compressed)})
 				changed = true
 			}
 		}

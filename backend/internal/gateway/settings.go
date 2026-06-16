@@ -23,7 +23,8 @@ const endpointSettingsKey = "endpoint_settings"
 // EndpointSettings holds the dashboard-configurable token-saving preferences.
 type EndpointSettings struct {
 	// RTKEnabled toggles input-side tool-output compression (the slimmer).
-	RTKEnabled bool `json:"rtk_enabled"`
+	RTKEnabled     bool   `json:"rtk_enabled"`
+	RTKFilterLevel string `json:"rtk_filter_level"` // "none", "minimal", "aggressive"
 
 	// CavemanEnabled toggles output-side caveman compression; CavemanLevel is
 	// one of "lite", "full", "ultra".
@@ -66,7 +67,8 @@ type EndpointSettings struct {
 // defaultEndpointSettings mirrors 9router's defaults: RTK on, caveman/terse off.
 func defaultEndpointSettings() EndpointSettings {
 	return EndpointSettings{
-		RTKEnabled:           true,
+		RTKEnabled:     true,
+		RTKFilterLevel: "none",
 		CavemanEnabled:       false,
 		CavemanLevel:         string(caveman.LevelFull),
 		TerseEnabled:         false,
@@ -111,6 +113,9 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 	if es.CavemanLevel == "" {
 		es.CavemanLevel = def.CavemanLevel
 	}
+	if es.RTKFilterLevel == "" {
+		es.RTKFilterLevel = def.RTKFilterLevel
+	}
 	if es.TerseLevel == "" {
 		es.TerseLevel = def.TerseLevel
 	}
@@ -150,7 +155,10 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 // slimmerConfig resolves the slimmer (RTK) settings from endpoint settings.
 func (s *Server) slimmerConfig() slimmer.Config {
 	es := s.loadEndpointSettings(context.Background())
-	return slimmer.Config{Enabled: es.RTKEnabled}
+	return slimmer.Config{
+		Enabled:     es.RTKEnabled,
+		FilterLevel: slimmer.ParseFilterLevel(es.RTKFilterLevel),
+	}
 }
 
 // terseConfig resolves terse-mode settings from endpoint settings.
@@ -183,6 +191,7 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 
 	var patch struct {
 		RTKEnabled              *bool   `json:"rtk_enabled"`
+		RTKFilterLevel          *string `json:"rtk_filter_level"`
 		CavemanEnabled          *bool   `json:"caveman_enabled"`
 		CavemanLevel            *string `json:"caveman_level"`
 		TerseEnabled            *bool   `json:"terse_enabled"`
@@ -207,12 +216,21 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.RTKEnabled != nil {
 		current.RTKEnabled = *patch.RTKEnabled
 	}
+	if patch.RTKFilterLevel != nil {
+		switch *patch.RTKFilterLevel {
+		case "none", "minimal", "aggressive":
+			current.RTKFilterLevel = *patch.RTKFilterLevel
+		default:
+			writeError(w, http.StatusBadRequest, "rtk_filter_level must be none, minimal, or aggressive")
+			return
+		}
+	}
 	if patch.CavemanEnabled != nil {
 		current.CavemanEnabled = *patch.CavemanEnabled
 	}
 	if patch.CavemanLevel != nil {
 		if !caveman.ValidLevel(caveman.Level(*patch.CavemanLevel)) {
-			writeError(w, http.StatusBadRequest, "caveman_level must be lite, full, or ultra")
+			writeError(w, http.StatusBadRequest, "caveman_level must be lite, full, ultra, wenyan-lite, wenyan-full, or wenyan-ultra")
 			return
 		}
 		current.CavemanLevel = *patch.CavemanLevel

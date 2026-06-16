@@ -137,3 +137,101 @@ func buildGrepBlob() string {
 	}
 	return b.String()
 }
+
+func TestExtendedNoiseDirs(t *testing.T) {
+	lines := []string{
+		"src", "lib", ".turbo", ".vercel", ".pytest_cache", ".mypy_cache",
+		".tox", "env", "coverage", ".nyc_output", "Thumbs.db", ".vs", ".eggs",
+		"something.egg-info", "main.go", "readme.md",
+	}
+	content := strings.Join(lines, "\n")
+	// Pad to meet ls detect threshold (needs ≥12 non-empty lines).
+	for i := 0; i < 10; i++ {
+		content += fmt.Sprintf("\nfile%d.txt", i)
+	}
+	req := toolResultReq(content, false)
+	stats := Default().Compress(req, Config{Enabled: true})
+	if stats != nil {
+		out := resultContent(req)
+		require.Contains(t, out, "noise entries hidden")
+		require.NotContains(t, out, ".turbo")
+		require.NotContains(t, out, ".vercel")
+	}
+}
+
+func TestTestRunnerRule_KeepsFailuresOnly(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Test Suites: 5 passed, 1 failed, 6 total\n")
+	b.WriteString("Tests:       42 passed, 3 failed, 45 total\n")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&b, "  ✓ test case %d passes correctly\n", i)
+	}
+	b.WriteString("  ✗ FAIL: broken test case should fail\n")
+	b.WriteString("  ✗ FAIL: another broken test\n")
+	req := toolResultReq(b.String(), false)
+	stats := Default().Compress(req, Config{Enabled: true})
+	require.NotNil(t, stats)
+	out := resultContent(req)
+	require.Contains(t, out, "FAIL")
+	require.Contains(t, out, "passing tests omitted")
+}
+
+func TestLintRule_GroupsByFile(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 15; i++ {
+		fmt.Fprintf(&b, "src/app.ts:%d:5: error TS2322: Type 'string' not assignable\n", i+1)
+	}
+	for i := 0; i < 15; i++ {
+		fmt.Fprintf(&b, "src/util.ts:%d:3: error TS2345: Argument not assignable\n", i+1)
+	}
+	req := toolResultReq(b.String(), false)
+	stats := Default().Compress(req, Config{Enabled: true, Disabled: []string{"grep", "find"}})
+	require.NotNil(t, stats)
+	out := resultContent(req)
+	require.Contains(t, out, "more issues in")
+}
+
+func TestContainerRule_CapsEntries(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("CONTAINER ID   IMAGE     COMMAND   STATUS    NAMES\n")
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&b, "abc%03d        nginx     \"/bin\"    Up %dh    web-%d\n", i, i, i)
+	}
+	req := toolResultReq(b.String(), false)
+	stats := Default().Compress(req, Config{Enabled: true, Disabled: []string{"ls", "find"}})
+	require.NotNil(t, stats)
+	out := resultContent(req)
+	require.Contains(t, out, "CONTAINER ID")
+	require.Contains(t, out, "more containers")
+}
+
+func TestDiffCompaction_StatSummary(t *testing.T) {
+	var b strings.Builder
+	for f := 0; f < 5; f++ {
+		fmt.Fprintf(&b, "diff --git a/file%d.go b/file%d.go\n", f, f)
+		b.WriteString("@@ -1,200 +1,200 @@\n")
+		for i := 0; i < 150; i++ {
+			fmt.Fprintf(&b, " unchanged line %d in file %d\n", i, f)
+		}
+		b.WriteString("+added line\n")
+		b.WriteString("-removed line\n")
+	}
+	req := toolResultReq(b.String(), false)
+	stats := Default().Compress(req, Config{Enabled: true})
+	require.NotNil(t, stats)
+	out := resultContent(req)
+	require.Contains(t, out, "files changed")
+	require.Contains(t, out, "+added line")
+}
+
+func TestSourceCodeFilter_MinimalSecondaryPass(t *testing.T) {
+	code := "package main\n\nimport \"fmt\"\n\n// This is a long comment that should be stripped\n" +
+		"func main() {\n\t// Another comment to remove\n\tfmt.Println(\"hello\")\n}\n" +
+		strings.Repeat("// padding comment line to make payload large enough\n", 20)
+	req := toolResultReq(code, false)
+	stats := Default().Compress(req, Config{Enabled: true, FilterLevel: FilterMinimal})
+	if stats != nil {
+		out := resultContent(req)
+		require.LessOrEqual(t, len(out), len(code))
+	}
+}

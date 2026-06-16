@@ -20,18 +20,28 @@ type oaiStreamChunk struct {
 			// that expose it as a structured field (DeepSeek, some MiMo
 			// versions). The JSON field name varies by provider.
 			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
+			ToolCalls []oaiStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *oaiUsage `json:"usage"`
+}
+
+type oaiStreamToolCall struct {
+	Index     int             `json:"index"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+	Input     json.RawMessage `json:"input"`
+	Params    json.RawMessage `json:"parameters"`
+	Args      json.RawMessage `json:"args"`
+	Function  struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Input     json.RawMessage `json:"input"`
+		Params    json.RawMessage `json:"parameters"`
+		Args      json.RawMessage `json:"args"`
+	} `json:"function"`
 }
 
 // ParseStreamLine decodes one upstream SSE data payload into canonical chunks.
@@ -64,8 +74,8 @@ func (OpenAICodec) ParseStreamLine(line []byte, model string) ([]core.StreamChun
 				Index: tc.Index,
 				ToolCall: &core.ToolCall{
 					ID:        tc.ID,
-					Name:      tc.Function.Name,
-					Arguments: json.RawMessage(tc.Function.Arguments),
+					Name:      firstNonEmpty(tc.Function.Name, tc.Name),
+					Arguments: extractOpenAIStreamToolArguments(tc),
 				},
 			})
 		}
@@ -93,6 +103,108 @@ func (OpenAICodec) ParseStreamLine(line []byte, model string) ([]core.StreamChun
 		})
 	}
 	return chunks, nil
+}
+
+func extractOpenAIStreamToolArguments(tc oaiStreamToolCall) json.RawMessage {
+	for _, raw := range []json.RawMessage{
+		tc.Function.Arguments,
+		tc.Function.Input,
+		tc.Function.Params,
+		tc.Function.Args,
+		tc.Arguments,
+		tc.Input,
+		tc.Params,
+		tc.Args,
+	} {
+		if normalized := normalizeOpenAIToolArguments(raw); len(normalized) > 0 {
+			return normalized
+		}
+	}
+	return nil
+}
+
+func normalizeOpenAIToolArguments(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		normalized := normalizeOpenAIToolArguments(json.RawMessage(s))
+		if len(normalized) > 0 {
+			return normalized
+		}
+		return json.RawMessage(s)
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		if nested := unwrapOpenAIToolArgumentObject(obj); nested != nil {
+			return nested
+		}
+		if out, err := json.Marshal(obj); err == nil {
+			return out
+		}
+	}
+
+	if json.Valid(raw) {
+		return raw
+	}
+	return nil
+}
+
+func unwrapOpenAIToolArgumentObject(obj map[string]json.RawMessage) json.RawMessage {
+	for _, key := range []string{
+		"input", "arguments", "parameters", "args",
+		"tool_input", "toolInput", "tool_arguments", "toolArguments",
+		"tool_parameters", "toolParameters", "payload", "data",
+	} {
+		nestedRaw, ok := obj[key]
+		if !ok {
+			continue
+		}
+		if nested := normalizeNestedOpenAIToolObject(nestedRaw); nested != nil {
+			return nested
+		}
+	}
+
+	if len(obj) == 1 {
+		for _, nestedRaw := range obj {
+			if nested := normalizeNestedOpenAIToolObject(nestedRaw); nested != nil {
+				return nested
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeNestedOpenAIToolObject(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return normalizeNestedOpenAIToolObject(json.RawMessage(s))
+	}
+
+	if raw[0] != '{' {
+		return nil
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err != nil || len(nested) == 0 {
+		return nil
+	}
+	if deeper := unwrapOpenAIToolArgumentObject(nested); deeper != nil {
+		return deeper
+	}
+	out, err := json.Marshal(nested)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // RenderStreamChunk encodes a canonical chunk as an OpenAI SSE event. The first
