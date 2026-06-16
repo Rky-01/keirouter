@@ -33,7 +33,13 @@ func (s *Server) mountGuardrails(r chi.Router) {
 	r.Post("/guardrails", s.adminCreateGuardrail)
 	r.Get("/guardrails/effective", s.adminEffectiveGuardrail)
 	r.Get("/guardrails/entities", s.adminListGuardrailEntities)
+	r.Get("/guardrails/templates", s.adminListGuardrailTemplates)
+	r.Get("/guardrails/export", s.adminExportGuardrails)
+	r.Post("/guardrails/import", s.adminImportGuardrails)
+	r.Get("/guardrails/tenant-flags", s.adminGetGuardrailTenantFlags)
+	r.Put("/guardrails/tenant-flags", s.adminPutGuardrailTenantFlags)
 	r.Get("/guardrails/logs", s.adminListGuardrailLogs)
+	r.Get("/guardrails/logs/stream", s.adminGuardrailLogStream)
 	r.Post("/guardrails/test", s.adminTestGuardrail)
 	r.Get("/guardrails/{id}", s.adminGetGuardrail)
 	r.Patch("/guardrails/{id}", s.adminUpdateGuardrail)
@@ -291,6 +297,16 @@ type testGuardrailInput struct {
 }
 
 func (s *Server) adminTestGuardrail(w http.ResponseWriter, r *http.Request) {
+	// Rate-limit the test endpoint per-session. Without a cap an attacker
+	// with a stolen dashboard cookie could use this to enumerate regex
+	// behavior or trigger ReDoS via crafted text. 10 requests/minute is
+	// generous for interactive tuning but tight enough to throttle abuse.
+	if s.guardrailTestRL != nil {
+		if !s.guardrailTestRL.allow(rateLimitKeyFor(r)) {
+			writeError(w, http.StatusTooManyRequests, "guardrails test rate-limit exceeded; try again in a minute")
+			return
+		}
+	}
 	var in testGuardrailInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())

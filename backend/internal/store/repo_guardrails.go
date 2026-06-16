@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // GuardrailRepo persists guardrail policies. Policies are looked up by
@@ -206,6 +207,19 @@ func (r *GuardrailLogRepo) BatchInsert(ctx context.Context, entries []GuardrailL
 		}
 	}
 	return tx.Commit()
+}
+
+// DeleteOlderThan removes audit log rows whose created_at is strictly older
+// than cutoff. Returns the number of rows deleted. Used by the retention
+// sweeper to enforce KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS.
+func (r *GuardrailLogRepo) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	q := r.db.rebind(`DELETE FROM guardrail_logs WHERE created_at < ?`)
+	res, err := r.db.sql.ExecContext(ctx, q, formatTime(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("store: delete guardrail logs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // ListFilter narrows audit log queries. Empty fields are ignored.

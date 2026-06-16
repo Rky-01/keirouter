@@ -43,6 +43,7 @@ It's built with Go, which means it’s incredibly lightweight (using barely ~20M
   - **Savings Dashboard:** See exactly how much money you've saved with a detailed breakdown of input and output compression ratios.
 - 💰 **Budget Engine:** Set per-key or per-organization USD and token hard limits with auto-cutoff to prevent unexpected bills.
 - 🚦 **Rate Limiting:** Protect your gateway and upstream quotas with per-key RPM, TPM, and concurrency caps. Use global defaults or assign limits through reusable plans.
+- 🛡️ **Guardrails (PII, Injection, Toxicity, Topics, Bias):** Content-safety policies layered global → provider → model → chain → API key. Indonesian-aware PII recognizers (NIK, NPWP, +62 phone), prompt-injection detection, bilingual toxicity + bias scoring, and streaming-output scanning. Bring-your-own-engine: OpenAI Moderation, Microsoft Presidio sidecar, or stay 100% offline.
 - 📋 **Plans & Policy Templates:** Create reusable budget templates with spend limits, token limits, rate limits, reset periods, allowed models, and alert thresholds. Assign plans to API keys so you define the rules once and apply them everywhere.
 - 🎨 **Branding & White-Label:** Customize the entire dashboard and portal with your own name, logo, favicon, tagline, and color palette. Perfect for teams and organizations that want a white-labeled AI gateway.
 - 🛠️ **Skills System:** Enhance your LLM interactions with built-in skills (Web Search, Image Generation, Text-to-Speech, etc.) natively routed through the gateway.
@@ -166,6 +167,43 @@ Each plan defines:
 
 A default plan is automatically created for each tenant. Plans can be managed from the dashboard's Plans page and assigned to API keys in the Keys settings.
 
+## 🛡️ Guardrails
+
+KeiRouter ships a built-in content-safety layer that runs detectors against every request and response. Policies are layered **global → provider → model → chain → API key** and merged at request time, so the most specific override wins.
+
+**Detectors out of the box:**
+
+| Detector | What it catches | Default engine | Optional engine |
+|---|---|---|---|
+| **PII** | Email, phone, credit card, IBAN, IP, URL, **NIK / NPWP / Indonesian passport** | Native Go (Presidio-compatible) | Microsoft Presidio HTTP sidecar (PERSON / LOCATION / multilingual) |
+| **Prompt Injection** | Ignore-previous, role override, DAN, prompt-leak, safety bypass | Native regex catalog | — |
+| **Topics** | Allow-list / block-list of conversation topics | Keyword + n-gram match | Embedding similarity (semantic paraphrase detection) |
+| **Toxicity** | Profanity, hate speech, harassment, violence, sexual — bilingual id+en | Native keyword catalog | OpenAI Moderation API |
+| **Bias** (outbound) | Political, gender, ethnic, religious bias in LLM responses | Native bilingual lexicon | — |
+
+**Actions per detector:** `log_only`, `warn`, `mask` (rewrite the prompt/response), or `block` (refuse with `policy_blocked`). The strictest action across detectors wins.
+
+**Strategies for PII:** `redact` (`<PII>`), `replace` (`<EMAIL_ADDRESS>`), `mask` (keep edges, asterisk middle), `hash`, `anonymize`, or `block`.
+
+**Streaming-safe:** A sliding 256-char buffer scans assistant text as chunks arrive — PII leaks or toxic output get caught mid-stream and the connection is cancelled with a policy error.
+
+**Observability:** Every decision lands in the **Audit Logs** tab with full findings (entity, score, redaction). The dashboard streams new rows live via SSE. Prometheus exposes `keirouter_guardrail_decisions_total{detector,action}` and `keirouter_guardrail_eval_seconds{detector}` at `/metrics`.
+
+**Compliance & hardening:**
+- **GDPR / data residency:** A per-tenant `allow_external_engines` flag forces all detectors back to their native engines so no data ever leaves the KeiRouter process.
+- **Audit retention:** `KEIROUTER_GUARDRAILS__AUDIT_RETENTION_DAYS=90` runs an hourly sweeper to drop old rows.
+- **Test endpoint rate-limited:** 10 req/min per session to prevent ReDoS / enumeration abuse.
+
+**Starter templates** ship in the dashboard's "From template" picker: Indonesia PII · Strict safety · Compliance audit (log-only) · Public chatbot · Compliance alerts-only. Policies can also be exported as a JSON bundle and imported on another instance.
+
+**Optional Presidio sidecar:**
+
+```bash
+docker compose -f compose.yaml -f compose.postgres.yaml -f compose.presidio.yaml up -d
+```
+
+Then set any PII policy's engine to `presidio` from the dashboard to unlock NER-based detection (`PERSON`, `LOCATION`, full multilingual coverage).
+
 ## 🎨 Branding & White-Label
 Make KeiRouter your own! The branding system lets you customize the entire look and feel of both the admin dashboard and the public-facing Usage Portal.
 
@@ -198,10 +236,12 @@ The portal is accessible at `/portal` and requires only the API key to log in—
 ## 🛠️ Architecture for the curious
 Curious how it works under the hood? Here's the life of a request:
 1. **Gateway:** Receives your HTTP request and parses the AI dialect (OpenAI, Anthropic, Gemini, etc.).
-2. **Pipeline:** Compresses your inputs (Slimmer), injects cost-saving prompts (Terse mode), and checks your budget limits.
-3. **Dispatch:** Picks the best provider account and handles fallbacks.
-4. **Connector & Transform:** Talks to the provider and translates the response back into the format your tool expects.
-5. **Meter:** Logs how many tokens you used so you can view it on the dashboard.
+2. **Guardrails (inbound):** Runs PII / injection / toxicity / topics detectors against the prompt. Block → refuse; Mask → rewrite the prompt in place.
+3. **Pipeline:** Compresses your inputs (Slimmer), injects cost-saving prompts (Terse mode), and checks your budget limits.
+4. **Dispatch:** Picks the best provider account and handles fallbacks.
+5. **Connector & Transform:** Talks to the provider and translates the response back into the format your tool expects.
+6. **Guardrails (outbound):** Scans the response (or each chunk for streams) for leaked PII, biased phrasing, or toxic content. Block → cancel; Mask → rewrite the response.
+7. **Meter:** Logs how many tokens you used so you can view it on the dashboard.
 
 ## 🌐 Supported Providers (60+)
 KeiRouter connects to a massive roster of AI providers out of the box. Here's the full list:

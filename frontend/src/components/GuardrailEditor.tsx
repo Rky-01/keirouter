@@ -139,11 +139,10 @@ function PIISection({
                       key={t}
                       type="button"
                       onClick={() => toggleType(t)}
-                      className={`text-xs px-2 py-1 rounded border ${
-                        on
+                      className={`text-xs px-2 py-1 rounded border ${on
                           ? "bg-indigo-500/10 border-indigo-500/40 text-indigo-600 dark:text-indigo-300"
                           : "bg-white/5 border-white/10 text-gray-600 dark:text-gray-300"
-                      }`}
+                        }`}
                     >
                       {t}
                     </button>
@@ -176,6 +175,21 @@ function PIISection({
                   value={c.min_score ?? 0.5}
                   onChange={(e) => onChange({ ...c, min_score: Number(e.target.value) })}
                 />
+              </Field>
+              <Field label="Detection engine">
+                <Select
+                  value={c.engine ?? "native"}
+                  onChange={(e) =>
+                    onChange({ ...c, engine: e.target.value as "native" | "presidio" })
+                  }
+                >
+                  <option value="native">Native (Go, default) — Indonesian + Presidio-compatible</option>
+                  <option value="presidio">Presidio HTTP sidecar — adds PERSON / LOCATION / multilingual</option>
+                </Select>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Presidio requires the analyzer sidecar (compose.presidio.yaml). Falls back to
+                  native if the sidecar is unreachable.
+                </p>
               </Field>
             </div>
             <div className="flex items-center justify-between">
@@ -266,7 +280,6 @@ function TopicsSection({
         title="Topic Boundaries"
         description="Restrict allowed conversation topics."
         iconTone="secondary"
-        action={<Badge tone="warning">Coming soon</Badge>}
       />
       <div className="px-5 pb-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -311,6 +324,37 @@ function TopicsSection({
                 ))}
               </Select>
             </Field>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Field label="Matching engine">
+                <Select
+                  value={c.engine ?? "keyword"}
+                  onChange={(e) =>
+                    onChange({ ...c, engine: e.target.value as "keyword" | "embedding" })
+                  }
+                >
+                  <option value="keyword">Keyword (default) — substring + token match, fast</option>
+                  <option value="embedding">Embedding — semantic similarity (requires API embedder)</option>
+                </Select>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Embedding catches paraphrases the keyword path misses. Requires an embeddings
+                  provider configured in <code>cache.embedding_provider=api</code>.
+                </p>
+              </Field>
+              {c.engine === "embedding" && (
+                <Field label="Similarity threshold (0.0–1.0)">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={c.similarity_threshold ?? 0.6}
+                    onChange={(e) =>
+                      onChange({ ...c, similarity_threshold: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -340,7 +384,6 @@ function ToxicitySection({
         title="Toxicity Detection"
         description="Classify and filter profanity, hate speech, harassment, violence, and sexual content."
         iconTone="danger"
-        action={<Badge tone="warning">Coming soon</Badge>}
       />
       <div className="px-5 pb-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -358,11 +401,10 @@ function ToxicitySection({
                       key={t}
                       type="button"
                       onClick={() => toggleCat(t)}
-                      className={`text-xs px-2 py-1 rounded border ${
-                        on
+                      className={`text-xs px-2 py-1 rounded border ${on
                           ? "bg-rose-500/10 border-rose-500/40 text-rose-600 dark:text-rose-300"
                           : "bg-white/5 border-white/10 text-gray-600 dark:text-gray-300"
-                      }`}
+                        }`}
                     >
                       {t.replace("_", " ")}
                     </button>
@@ -391,6 +433,21 @@ function ToxicitySection({
                     </option>
                   ))}
                 </Select>
+              </Field>
+              <Field label="Scoring engine">
+                <Select
+                  value={c.engine ?? "native"}
+                  onChange={(e) =>
+                    onChange({ ...c, engine: e.target.value as "native" | "openai" })
+                  }
+                >
+                  <option value="native">Native (Go, default) — keyword catalog id + en, offline</option>
+                  <option value="openai">OpenAI Moderation — multi-language, requires API key</option>
+                </Select>
+                <p className="mt-1.5 text-xs text-gray-500">
+                  OpenAI engine needs <code>KEIROUTER_GUARDRAILS__TOXICITY__OPENAI_API_KEY</code>{" "}
+                  set on the server. Falls back to native if the key is missing.
+                </p>
               </Field>
             </div>
           </>
@@ -422,7 +479,7 @@ function BiasSection({
         title="Bias Detection"
         description="Scan output for political, gender, ethnic, or religious bias."
         iconTone="secondary"
-        action={<Badge tone="warning">Coming soon</Badge>}
+        action={<Badge tone="neutral">Experimental</Badge>}
       />
       <div className="px-5 pb-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -440,11 +497,10 @@ function BiasSection({
                       key={t}
                       type="button"
                       onClick={() => toggleCat(t)}
-                      className={`text-xs px-2 py-1 rounded border ${
-                        on
+                      className={`text-xs px-2 py-1 rounded border ${on
                           ? "bg-violet-500/10 border-violet-500/40 text-violet-600 dark:text-violet-300"
                           : "bg-white/5 border-white/10 text-gray-600 dark:text-gray-300"
-                      }`}
+                        }`}
                     >
                       {t}
                     </button>

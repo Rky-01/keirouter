@@ -12,19 +12,51 @@ import (
 )
 
 // Detector is the guardrails.Detector implementation for PII.
-type Detector struct{}
+type Detector struct {
+	// presidio, when non-nil, handles policies that set engine="presidio".
+	// Policies with engine="" or "native" always use the in-process Go
+	// recognizers. The native path stays available as a fallback when the
+	// sidecar errors out.
+	presidio *PresidioEngine
+}
 
-// New returns the native-Go PII detector.
+// Config configures the detector. Pass a non-nil Presidio engine to enable
+// engine="presidio" routing on a per-policy basis.
+type Config struct {
+	Presidio *PresidioEngine
+}
+
+// New returns the native-Go PII detector with no external engines wired.
 func New() *Detector { return &Detector{} }
 
+// NewWithConfig builds a detector with optional external engines.
+func NewWithConfig(cfg Config) *Detector {
+	return &Detector{presidio: cfg.Presidio}
+}
+
+// recognize dispatches a recognition call to the engine selected by the
+// policy. The native path is used when engine is unset / "native", or when
+// the Presidio engine returns an error (graceful fallback so a sidecar
+// hiccup doesn't break safety).
+func (d *Detector) recognize(ctx context.Context, text string, cfg *guardrails.PIIConfig, allowed map[Entity]bool, minScore float64) []Match {
+	if d.presidio != nil && strings.EqualFold(cfg.Engine, "presidio") {
+		matches, err := d.presidio.Recognize(ctx, text, allowed, minScore)
+		if err == nil {
+			return matches
+		}
+		// fall through to native on error
+	}
+	return Recognize(text, allowed, minScore)
+}
+
 // Name identifies this detector in audit logs and policy config.
-func (Detector) Name() string { return "pii" }
+func (*Detector) Name() string { return "pii" }
 
 // Inbound scans the request's text content. When matches exceed the policy
 // threshold, the configured strategy is applied: redact/replace/mask/hash
 // rewrite the text in place, block returns a block decision the engine
 // surfaces to the caller as policy_blocked.
-func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guardrails.Policy) (*guardrails.Decision, error) {
+func (d *Detector) Inbound(ctx context.Context, in *guardrails.InboundRequest, p guardrails.Policy) (*guardrails.Decision, error) {
 	cfg := p.PII
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
@@ -37,7 +69,7 @@ func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guar
 
 	// Run recognizers across the FlatText composed by the engine; this
 	// covers System + Messages content with role delimiters.
-	matches := Recognize(in.FlatText, allowed, minScore)
+	matches := d.recognize(ctx, in.FlatText, cfg, allowed, minScore)
 	if len(matches) == 0 {
 		return nil, nil
 	}
@@ -65,7 +97,7 @@ func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guar
 		// No user message to rewrite — fall back to redacting the system
 		// prompt only (covers the rare case of system-only prompts).
 		original := in.Source.System
-		rewritten, redactions := applyStrategy(original, allowed, minScore, strategy)
+		rewritten, redactions := d.applyStrategy(ctx, original, cfg, allowed, minScore, strategy)
 		if rewritten == original {
 			return nil, nil
 		}
@@ -80,7 +112,7 @@ func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guar
 	}
 
 	original := in.Source.Messages[userIdx].TextContent()
-	rewritten, redactions := applyStrategy(original, allowed, minScore, strategy)
+	rewritten, redactions := d.applyStrategy(ctx, original, cfg, allowed, minScore, strategy)
 	if rewritten == original {
 		// All matches were in non-user surfaces; nothing to mutate cleanly
 		// in Phase 1 — surface a Warn so audit captures it.
@@ -103,7 +135,7 @@ func (Detector) Inbound(_ context.Context, in *guardrails.InboundRequest, p guar
 }
 
 // Outbound scans the LLM response for leaked PII when ScanOutput is set.
-func (Detector) Outbound(_ context.Context, out *guardrails.OutboundResponse, p guardrails.Policy) (*guardrails.Decision, error) {
+func (d *Detector) Outbound(ctx context.Context, out *guardrails.OutboundResponse, p guardrails.Policy) (*guardrails.Decision, error) {
 	cfg := p.PII
 	if cfg == nil || !cfg.Enabled || !cfg.ScanOutput {
 		return nil, nil
@@ -113,7 +145,7 @@ func (Detector) Outbound(_ context.Context, out *guardrails.OutboundResponse, p 
 	if minScore <= 0 {
 		minScore = 0.5
 	}
-	matches := Recognize(out.Text, allowed, minScore)
+	matches := d.recognize(ctx, out.Text, cfg, allowed, minScore)
 	if len(matches) == 0 {
 		return nil, nil
 	}
@@ -129,7 +161,7 @@ func (Detector) Outbound(_ context.Context, out *guardrails.OutboundResponse, p 
 			Findings: toFindings(matches, nil),
 		}, nil
 	}
-	rewritten, redactions := applyStrategy(out.Text, allowed, minScore, strategy)
+	rewritten, redactions := d.applyStrategy(ctx, out.Text, cfg, allowed, minScore, strategy)
 	if rewritten == out.Text {
 		return nil, nil
 	}
@@ -173,8 +205,8 @@ func lastUserMessageIndex(req *core.ChatRequest) int {
 // applyStrategy rewrites text by substituting each match per the chosen
 // strategy. It scans the original text once and emits the rewritten string
 // plus a parallel list of redacted replacements (for audit logs).
-func applyStrategy(text string, allowed map[Entity]bool, minScore float64, strategy guardrails.PIIStrategy) (string, []string) {
-	matches := Recognize(text, allowed, minScore)
+func (d *Detector) applyStrategy(ctx context.Context, text string, cfg *guardrails.PIIConfig, allowed map[Entity]bool, minScore float64, strategy guardrails.PIIStrategy) (string, []string) {
+	matches := d.recognize(ctx, text, cfg, allowed, minScore)
 	if len(matches) == 0 {
 		return text, nil
 	}

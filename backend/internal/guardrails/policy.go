@@ -64,25 +64,39 @@ type InjectionConfig struct {
 	Action Action `json:"action,omitempty"`
 }
 
-// TopicsConfig parametrizes the topic boundary detector (stub in Phase 1).
+// TopicsConfig parametrizes the topic boundary detector.
 type TopicsConfig struct {
 	Enabled bool   `json:"enabled"`
 	Mode    string `json:"mode,omitempty"` // allow | block
-	// Topics is a free-form list of topic keywords; semantic matching arrives
-	// in Phase 2 via an embedding model.
+	// Topics is a free-form list of topic keywords. Layer-1 detection uses
+	// keyword/ngram match; when an Embedder is wired the detector also runs
+	// Layer-2 cosine-similarity matching with SimilarityThreshold.
 	Topics []string `json:"topics,omitempty"`
 	Action Action   `json:"action,omitempty"`
+	// Engine selects the matching strategy: "keyword" (default) or "embedding"
+	// (requires an embedder; falls back to keyword if none is wired).
+	Engine string `json:"engine,omitempty"`
+	// SimilarityThreshold is the cosine-similarity cutoff used by the embedding
+	// path (0.0–1.0). Default 0.6.
+	SimilarityThreshold float64 `json:"similarity_threshold,omitempty"`
 }
 
-// ToxicityConfig parametrizes the toxicity detector (stub in Phase 1).
+// ToxicityConfig parametrizes the toxicity detector.
 type ToxicityConfig struct {
 	Enabled    bool     `json:"enabled"`
 	Categories []string `json:"categories,omitempty"` // profanity, hate, harassment, ...
 	Threshold  int      `json:"threshold,omitempty"`  // 0–100
 	Action     Action   `json:"action,omitempty"`
+	// Engine selects the implementation: "native" (default, keyword catalog)
+	// or "openai" (OpenAI Moderation API). The OpenAI engine requires
+	// credentials wired at startup; if missing the detector falls back to
+	// native.
+	Engine string `json:"engine,omitempty"`
 }
 
-// BiasConfig parametrizes the bias detector (stub in Phase 1).
+// BiasConfig parametrizes the bias detector. Outbound-only — runs on the
+// model response. Phase 2 ships a lexicon-based scorer; LLM-eval and provider
+// moderation passthrough are tracked for a later iteration.
 type BiasConfig struct {
 	Enabled    bool     `json:"enabled"`
 	Categories []string `json:"categories,omitempty"` // political, gender, ethnic, religious

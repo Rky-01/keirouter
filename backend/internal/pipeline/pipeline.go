@@ -550,7 +550,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		out := make(chan core.StreamChunk, 16)
 		meta := req.Metadata
 		acc := attempt
-		go p.pumpStream(ctx, upstream, out, meta, acc, started, &ttft, save, scope, release)
+		go p.pumpStream(ctx, req, upstream, out, meta, acc, started, &ttft, save, scope, release)
 
 		return &StreamResult{
 			Chunks:    out,
@@ -575,7 +575,13 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 //
 // When StreamStallTimeout is configured, a timer resets on every chunk. If no
 // chunk arrives within the timeout, the stream is cancelled with ErrTimeout.
-func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, out chan<- core.StreamChunk,
+//
+// pumpStream also runs Outbound guardrails on streaming text via a sliding
+// window: every chunkScanWindow characters, the accumulated tail is handed
+// to the engine. On a Mask decision the rewritten text replaces the buffered
+// tail before forwarding; on a Block decision the stream is cancelled and an
+// error chunk is delivered to the client.
+func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-chan core.StreamChunk, out chan<- core.StreamChunk,
 	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time, ttft *time.Duration, save *saveState, scope budget.Scope, release limits.ReleaseFunc) {
 	defer close(out)
 	defer release(0)
@@ -621,6 +627,16 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 
 	resetStall() // arm the timer for the initial connection
 
+	// Sliding window for outbound guardrails. We buffer the tail of the
+	// assistant's text output and ask the engine to scan it every
+	// chunkScanWindow characters. The window is small (256 chars) so the
+	// added per-chunk regex work is microseconds, but large enough that
+	// matches that span chunk boundaries (PII split across 2 frames) still
+	// fire. ChunkText.Delta is the only chunk type we feed the scanner;
+	// thinking, tool calls, and usage events are passed through untouched.
+	const chunkScanWindow = 256
+	var streamBuf strings.Builder
+
 	var usage core.Usage
 	for {
 		select {
@@ -638,6 +654,39 @@ func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, o
 			if chunk.Type == core.ChunkUsage && chunk.Usage != nil {
 				usage = mergeUsage(usage, *chunk.Usage)
 			}
+
+			// Outbound guardrail scan for streamed text. We accumulate every
+			// text delta and rescan the tail at each window boundary. A Block
+			// short-circuits: we cancel the stream and surface an error chunk
+			// so the client sees a policy refusal mid-stream.
+			if chunk.Type == core.ChunkText && chunk.Delta != "" && p.guardrails != nil {
+				streamBuf.WriteString(chunk.Delta)
+				if streamBuf.Len() >= chunkScanWindow {
+					gres := p.guardrails.OutboundChunk(ctx, req, streamBuf.String())
+					if gres.Action == guardrails.ActionBlock {
+						p.log.Debug("guardrails blocked streaming output", "reason", gres.Reason)
+						out <- core.StreamChunk{
+							Type: core.ChunkError,
+							Err: &core.ProviderError{
+								Kind:     core.ErrPolicyBlocked,
+								Provider: attempt.Target.Provider,
+								Model:    attempt.Target.Model,
+								Message:  gres.Reason,
+							},
+						}
+						for range in {
+						}
+						totalLatency := time.Since(started)
+						cost := p.recordWithTTFT(ctx, meta, attempt, usage, false, totalLatency, *ttft, save)
+						p.budgetConfirm(scope, cost)
+						return
+					}
+					// Reset the buffer once it has been scanned; we only need
+					// rolling lookback within one window, not the whole stream.
+					streamBuf.Reset()
+				}
+			}
+
 			select {
 			case out <- chunk:
 			case <-stallCtx.Done():
