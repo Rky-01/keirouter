@@ -301,8 +301,11 @@ func (c *Qoder) buildPayload(req *core.ChatRequest, modelKey string, modelConfig
 	maxTokens := resolveMaxTokens(req, modelConfig)
 	lastUser := lastUserText(msgs)
 
-	userID := "" // will be filled from creds at call time
-	sessionID := stableHash("qoder-session", userID, modelKey)
+	sessionKey := req.Metadata.ContextAffinityKey
+	if sessionKey == "" {
+		sessionKey = modelKey
+	}
+	sessionID := stableHash("qoder-session", sessionKey, modelKey)
 	recordID := stableChatRecordID(modelKey, msgs, tools, maxTokens)
 
 	// Determine is_reasoning from model_config.

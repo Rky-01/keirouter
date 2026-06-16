@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 
@@ -14,7 +15,8 @@ func TestRequestAffinityKeyPrefersExplicitHeader(t *testing.T) {
 	r.Header.Set("X-Conversation-ID", "thread-123")
 
 	got := requestAffinityKey(r, &core.ChatRequest{})
-	require.Equal(t, "header:x-conversation-id:thread-123", got)
+	require.Contains(t, got, "header:x-conversation-id:")
+	require.NotContains(t, got, "thread-123")
 }
 
 func TestRequestAffinityKeyUsesStableFirstUserFingerprint(t *testing.T) {
@@ -41,4 +43,26 @@ func TestRequestAffinityKeyUsesStableFirstUserFingerprint(t *testing.T) {
 	}
 
 	require.Equal(t, requestAffinityKey(r, base), requestAffinityKey(r, followUp))
+}
+
+func TestRequestAffinityKeySupportsPromptCacheAndMetadataUserID(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := &core.ChatRequest{
+		Extra: map[string]json.RawMessage{
+			"prompt_cache_key": json.RawMessage(`"cache-abc"`),
+		},
+	}
+
+	got := requestAffinityKey(r, req)
+	require.Contains(t, got, "body:")
+	require.NotContains(t, got, "cache-abc")
+
+	req = &core.ChatRequest{
+		Extra: map[string]json.RawMessage{
+			"metadata": json.RawMessage(`{"user_id":"session-user-1"}`),
+		},
+	}
+	got = requestAffinityKey(r, req)
+	require.Contains(t, got, "body:")
+	require.NotContains(t, got, "session-user-1")
 }

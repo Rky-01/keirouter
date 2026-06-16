@@ -393,6 +393,18 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 					})
 				}
 			}
+			// Anthropic clients (Claude Code) send tool_result blocks inside a
+			// user message, not as a separate role=tool message. Responses API
+			// still requires these as top-level function_call_output items.
+			for _, p := range m.Content {
+				if p.Type == core.PartToolResult && p.ToolResult != nil {
+					input = append(input, map[string]any{
+						"type":    "function_call_output",
+						"call_id": clampCallID(p.ToolResult.CallID),
+						"output":  p.ToolResult.Content,
+					})
+				}
+			}
 
 		case core.RoleTool:
 			for _, p := range m.Content {

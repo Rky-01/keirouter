@@ -131,7 +131,13 @@ func (c *CloudCode) wrapRequest(req *core.ChatRequest, creds core.Credentials) (
 
 	if c.variant == variantAntigravity {
 		// Antigravity adds session id + agent metadata to the inner request.
-		sessionID := creds.Extra["session_id"]
+		sessionID := req.Metadata.ContextAffinityKey
+		if sessionID != "" {
+			sessionID = uuid.NewSHA1(uuid.NameSpaceURL, []byte(sessionID)).String()
+		}
+		if sessionID == "" {
+			sessionID = creds.Extra["session_id"]
+		}
 		if sessionID == "" {
 			sessionID = deriveCloudCodeSession(creds)
 		}

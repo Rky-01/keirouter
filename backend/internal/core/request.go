@@ -107,6 +107,10 @@ type RequestMetadata struct {
 	// (empty for direct provider/model targeting). Used by the guardrails
 	// resolver for chain-scoped policy lookup.
 	ChainID string
+	// ContextAffinityKey is a privacy-safe, stable conversation/session key used
+	// to keep account routing and provider-side session/cache IDs sticky across
+	// fallback and follow-up requests.
+	ContextAffinityKey string
 	// RequiredCapabilities the chosen model must satisfy (anti-downgrade guard).
 	RequiredCapabilities CapabilitySet
 }

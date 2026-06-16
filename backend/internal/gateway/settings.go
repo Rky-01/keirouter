@@ -73,7 +73,6 @@ func defaultEndpointSettings() EndpointSettings {
 		CavemanLevel:         string(caveman.LevelFull),
 		TerseEnabled:         false,
 		TerseLevel:           "medium",
-		RoutingStrategy:      "fill-first",
 		StickyLimit:          3,
 		ComboStrategy:        "fallback",
 		ComboStickyLimit:     1,
@@ -83,6 +82,10 @@ func defaultEndpointSettings() EndpointSettings {
 		RateLimitsEnabled:    true,
 		// Timeout defaults (ms). Raised from 9router's aggressive 20s/30s to
 		// accommodate slow upstream providers and reasoning models.
+		// Keep account routing context-sticky by default: repeated turns from
+		// the same conversation prefer the same account, while new conversations
+		// still spread across accounts.
+		RoutingStrategy:         string(dispatch.StrategySmartRoundRobin),
 		StreamStallTimeoutMs:    120000, // 2 min (was 30s in 9router)
 		ResponseHeaderTimeoutMs: 60000,  // 60s (was 20s in 9router)
 		RequestTimeoutMs:        300000, // 5 min

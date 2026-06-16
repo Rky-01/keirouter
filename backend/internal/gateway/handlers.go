@@ -216,6 +216,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		s.consoleLog.Logf("DEBUG", "  target[%d]: %s/%s", i, t.Provider, t.Model)
 	}
 	affinityKey := requestAffinityKey(r, req)
+	req.Metadata.ContextAffinityKey = affinityKey
 	body = nil // release body for GC — no longer needed
 
 	effectiveLimits, err := s.effectiveLimits(r.Context(), key)
@@ -845,12 +846,12 @@ func sanitizeClientToken(s string) string {
 func requestAffinityKey(r *http.Request, req *core.ChatRequest) string {
 	for _, header := range affinityHeaders {
 		if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
-			return "header:" + strings.ToLower(header) + ":" + v
+			return hashAffinityValue("header:"+strings.ToLower(header), v)
 		}
 	}
 
 	if v := extraAffinityKey(req); v != "" {
-		return "body:" + v
+		return hashAffinityValue("body", v)
 	}
 	if req == nil {
 		return ""
@@ -859,8 +860,16 @@ func requestAffinityKey(r *http.Request, req *core.ChatRequest) string {
 	if seed == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(seed))
-	return "fingerprint:" + hex.EncodeToString(sum[:])
+	return hashAffinityValue("fingerprint", seed)
+}
+
+func hashAffinityValue(source, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(source + "\x00" + value))
+	return source + ":" + hex.EncodeToString(sum[:])
 }
 
 // affinityHeaders is the ordered list of HTTP headers checked for routing affinity.
@@ -869,6 +878,8 @@ var affinityHeaders = []string{
 	"X-Conversation-ID",
 	"X-Thread-ID",
 	"X-Session-ID",
+	"X-Amp-Thread-ID",
+	"X-Client-Request-ID",
 	"OpenAI-Conversation-ID",
 }
 
@@ -898,6 +909,9 @@ func extraAffinityKey(req *core.ChatRequest) string {
 	if v := rawObjectString(req.Extra["metadata"], "session_id"); v != "" {
 		return "metadata.session_id:" + v
 	}
+	if v := rawObjectString(req.Extra["metadata"], "user_id"); v != "" {
+		return "metadata.user_id:" + v
+	}
 	return ""
 }
 
@@ -906,6 +920,7 @@ var affinityBodyKeys = []string{
 	"conversation_id",
 	"thread_id",
 	"session_id",
+	"prompt_cache_key",
 	"previous_response_id",
 	"parent_id",
 }

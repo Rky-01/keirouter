@@ -199,6 +199,37 @@ func TestResponses_RenderRequest_Shape(t *testing.T) {
 	require.Equal(t, "out", parsed.Input[2].Output)
 }
 
+func TestResponses_RenderRequest_AnthropicUserToolResult(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "gpt-5-codex",
+		Messages: []core.Message{
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call_Sdv5EdtiwN15K2yYb9q8pbXD", Name: "Read", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: "call_Sdv5EdtiwN15K2yYb9q8pbXD", Content: "file body"}},
+			}},
+		},
+	}
+
+	body, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed struct {
+		Input []struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+			Output string `json:"output"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	require.Len(t, parsed.Input, 2)
+	require.Equal(t, "function_call", parsed.Input[0].Type)
+	require.Equal(t, "function_call_output", parsed.Input[1].Type)
+	require.Equal(t, "call_Sdv5EdtiwN15K2yYb9q8pbXD", parsed.Input[1].CallID)
+	require.Equal(t, "file body", parsed.Input[1].Output)
+}
+
 func TestResponses_ParseResponse_Unary(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_123",

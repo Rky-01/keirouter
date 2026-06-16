@@ -82,6 +82,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Metadata.ChainID = resolved.PlanOpts.ChainID
 	affinityKey := requestAffinityKey(r, req)
+	req.Metadata.ContextAffinityKey = affinityKey
 
 	opts := pipeline.Options{
 		Targets:  resolved.Targets,
