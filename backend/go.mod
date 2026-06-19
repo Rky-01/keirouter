@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/RudsonCarvalho/terse-go v0.0.0-20260319103846-35494a19d816
 	github.com/bytedance/sonic v1.15.2
-	github.com/go-chi/chi/v5 v5.2.2
+	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-chi/cors v1.2.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
