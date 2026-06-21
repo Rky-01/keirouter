@@ -212,12 +212,23 @@ func normalizeNestedOpenAIToolObject(raw json.RawMessage) json.RawMessage {
 func (OpenAICodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamState) ([][]byte, error) {
 	delta := map[string]any{}
 	switch chunk.Type {
+	case core.ChunkThinking:
+		// Echo structured reasoning back to the client as reasoning_content so
+		// clients that replay it on follow-up turns (Cursor, Cline, etc.) keep
+		// the real reasoning. DeepSeek/MiniMax thinking mode requires this
+		// field on subsequent turns or it returns a 400.
+		if !state.SentRole {
+			delta["role"] = "assistant"
+			state.SentRole = true
+		}
+		delta["reasoning_content"] = chunk.Delta
 	case core.ChunkText:
 		if !state.SentRole {
 			delta["role"] = "assistant"
 			state.SentRole = true
 		}
 		delta["content"] = chunk.Delta
+
 	case core.ChunkToolCall:
 		if !state.SentRole {
 			delta["role"] = "assistant"

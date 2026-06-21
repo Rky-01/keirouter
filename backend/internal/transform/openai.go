@@ -306,18 +306,47 @@ func fallbackResponseFormat(responseFormat json.RawMessage) json.RawMessage {
 	return out
 }
 
+// reasoningPlaceholder is injected as reasoning_content on assistant messages
+// that lack real reasoning when the target requires it. A single space is the
+// minimal non-empty value that satisfies upstream "must be passed back"
+// validation without polluting the conversation.
+const reasoningPlaceholder = " "
+
+// requiresReasoningEcho reports whether the given provider/model echoes
+// reasoning_content in thinking mode and rejects (400) follow-up turns that
+// omit it. DeepSeek's thinking-capable models are the primary case; matching
+// on the model name also covers DeepSeek served via OpenAI-compatible
+// aggregators (OpenRouter, SiliconFlow, Fireworks, etc.).
+func requiresReasoningEcho(providerID, model string) bool {
+	if providerID == "deepseek" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(model), "deepseek")
+}
+
 // RenderRequestForProvider renders an OpenAI request for a specific provider,
-// applying provider-specific fallbacks (e.g. json_schema → json_object).
+// applying provider-specific fallbacks (e.g. json_schema → json_object) and,
+// for reasoning providers, ensuring assistant messages carry reasoning_content.
 func (c OpenAICodec) RenderRequestForProvider(req *core.ChatRequest, providerID string) ([]byte, error) {
+	injectReasoning := requiresReasoningEcho(providerID, req.Model)
 	if needsJSONSchemaFallback(providerID, req.ResponseFormat) {
 		clone := *req
 		clone.ResponseFormat = fallbackResponseFormat(req.ResponseFormat)
-		return c.RenderRequest(&clone)
+		return renderOAIRequest(&clone, injectReasoning)
 	}
-	return c.RenderRequest(req)
+	return renderOAIRequest(req, injectReasoning)
 }
 
 func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
+	return renderOAIRequest(req, false)
+}
+
+// renderOAIRequest renders a canonical request to the OpenAI wire format. When
+// injectReasoning is set, assistant messages that carry no real reasoning get a
+// placeholder reasoning_content so reasoning-mode providers (DeepSeek, etc.)
+// don't reject the follow-up turn with a 400. Messages with genuine reasoning
+// are left untouched so the real chain-of-thought is preserved.
+func renderOAIRequest(req *core.ChatRequest, injectReasoning bool) ([]byte, error) {
 	out := oaiRequest{
 		Model:       req.Model,
 		Temperature: req.Temperature,
@@ -338,7 +367,11 @@ func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	}
 
 	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, renderOAIMessage(m))
+		msg := renderOAIMessage(m)
+		if injectReasoning && msg.Role == string(core.RoleAssistant) && msg.ReasoningContent == "" {
+			msg.ReasoningContent = reasoningPlaceholder
+		}
+		out.Messages = append(out.Messages, msg)
 	}
 
 	for _, t := range req.Tools {
@@ -352,6 +385,7 @@ func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 
 	return json.Marshal(out)
 }
+
 
 func renderOAIMessage(m core.Message) oaiMessage {
 	out := oaiMessage{Role: string(m.Role), Name: m.Name}
@@ -546,9 +580,12 @@ func (OpenAICodec) RenderResponse(resp *core.ChatResponse) ([]byte, error) {
 func renderOAIChoice(resp *core.ChatResponse) map[string]any {
 	message := map[string]any{"role": "assistant"}
 	var text strings.Builder
+	var thinking strings.Builder
 	var toolCalls []map[string]any
 	for _, p := range resp.Message.Content {
 		switch p.Type {
+		case core.PartThinking:
+			thinking.WriteString(p.Text)
 		case core.PartText:
 			text.WriteString(p.Text)
 		case core.PartToolCall:
@@ -567,9 +604,16 @@ func renderOAIChoice(resp *core.ChatResponse) map[string]any {
 	} else {
 		message["content"] = nil
 	}
+	// Surface structured reasoning so clients can replay it on follow-up turns
+	// (DeepSeek/MiniMax thinking mode require reasoning_content to be echoed
+	// back or the next request returns a 400).
+	if thinking.Len() > 0 {
+		message["reasoning_content"] = thinking.String()
+	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls
 	}
+
 	return map[string]any{
 		"index":         0,
 		"message":       message,
