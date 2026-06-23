@@ -149,3 +149,103 @@ func TestRequiresReasoningEcho(t *testing.T) {
 	require.False(t, requiresReasoningEcho("openai", "gpt-4o"))
 	require.False(t, requiresReasoningEcho("groq", "llama-3.3-70b"))
 }
+
+func TestOpenAI_RenderRequest_DeepSeekToolCallFixes(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "deepseek-v4-flash",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{Name: "get_weather", Arguments: json.RawMessage(`{"city":"Jakarta"}`)}},
+			}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "deepseek")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Len(t, got.Messages, 3)
+	assistant := got.Messages[1]
+	require.Equal(t, reasoningPlaceholder, assistant.ReasoningContent)
+	require.Len(t, assistant.ToolCalls, 1)
+	require.Equal(t, "call_msg1_tc0_get_weather", assistant.ToolCalls[0].ID)
+	require.Equal(t, "function", assistant.ToolCalls[0].Type)
+
+	var args string
+	require.NoError(t, json.Unmarshal(assistant.ToolCalls[0].Function.Arguments, &args))
+	require.JSONEq(t, `{"city":"Jakarta"}`, args)
+	require.Equal(t, "tool", got.Messages[2].Role)
+	require.Equal(t, assistant.ToolCalls[0].ID, got.Messages[2].ToolCallID)
+}
+
+func TestOpenAI_RenderRequest_NonDeepSeekToolCallsUntouched(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []core.Message{
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{Name: "get_weather", Arguments: json.RawMessage(`{"city":"Jakarta"}`)}},
+			}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "openai")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Len(t, got.Messages, 1)
+	require.Empty(t, got.Messages[0].ReasoningContent)
+	require.Empty(t, got.Messages[0].ToolCalls[0].ID)
+}
+
+func TestOpenAI_RenderRequest_DeepSeekV4ProAliases(t *testing.T) {
+	cases := []struct {
+		model        string
+		wantEffort   string
+		wantThinking string
+	}{
+		{model: "deepseek-v4-pro-max", wantEffort: "max", wantThinking: "enabled"},
+		{model: "deepseek-v4-pro-none", wantEffort: "", wantThinking: "disabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			req := &core.ChatRequest{Model: tc.model, Messages: []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}}}}
+			body, err := OpenAICodec{}.RenderRequestForProvider(req, "deepseek")
+			require.NoError(t, err)
+
+			var got oaiRequest
+			require.NoError(t, json.Unmarshal(body, &got))
+			require.Equal(t, "deepseek-v4-pro", got.Model)
+			require.Equal(t, tc.wantEffort, got.ReasoningEffort)
+			require.NotNil(t, got.ExtraBody["thinking"])
+			thinking := got.ExtraBody["thinking"].(map[string]any)
+			require.Equal(t, tc.wantThinking, thinking["type"])
+		})
+	}
+}
+
+func TestOpenAI_RenderRequest_DeepSeekReasoningEffortMapping(t *testing.T) {
+	cases := []struct {
+		effort string
+		want   string
+	}{
+		{effort: "low", want: "high"},
+		{effort: "medium", want: "high"},
+		{effort: "high", want: "high"},
+		{effort: "xhigh", want: "max"},
+		{effort: "max", want: "max"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.effort, func(t *testing.T) {
+			req := &core.ChatRequest{Model: "deepseek-v4-flash", Reasoning: &core.ReasoningConfig{Effort: tc.effort}}
+			body, err := OpenAICodec{}.RenderRequestForProvider(req, "custom-openai")
+			require.NoError(t, err)
+
+			var got oaiRequest
+			require.NoError(t, json.Unmarshal(body, &got))
+			require.Equal(t, tc.want, got.ReasoningEffort)
+			require.NotNil(t, got.Thinking)
+			require.Equal(t, "enabled", got.Thinking.Type)
+		})
+	}
+}

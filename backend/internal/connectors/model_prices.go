@@ -174,9 +174,15 @@ func anthropicModelPrices() []ModelPrice {
 
 func deepseekModelPrices() []ModelPrice {
 	return []ModelPrice{
-		{Provider: "deepseek", Model: "deepseek-chat", InputPerM: 0.27, OutputPerM: 1.1, CachedInputPerM: 0.07, CacheWritePerM: 0.27},
-		{Provider: "deepseek", Model: "deepseek-coder", InputPerM: 0.27, OutputPerM: 1.1, CachedInputPerM: 0.07, CacheWritePerM: 0.27},
-		{Provider: "deepseek", Model: "deepseek-reasoner", InputPerM: 0.55, OutputPerM: 2.19, CachedInputPerM: 0.14, CacheWritePerM: 0.55, ReasoningPerM: 2.19},
+		{Provider: "deepseek", Model: "deepseek-chat", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-reasoner", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-r1", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-v3.2-chat", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-v3.2-reasoner", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-v4-flash", InputPerM: 0.14, OutputPerM: 0.28, CachedInputPerM: 0.0028, CacheWritePerM: 0.14, ReasoningPerM: 0.28},
+		{Provider: "deepseek", Model: "deepseek-v4-pro", InputPerM: 0.435, OutputPerM: 0.87, CachedInputPerM: 0.003625, CacheWritePerM: 0.435, ReasoningPerM: 0.87},
+		{Provider: "deepseek", Model: "deepseek-v4-pro-max", InputPerM: 0.435, OutputPerM: 0.87, CachedInputPerM: 0.003625, CacheWritePerM: 0.435, ReasoningPerM: 0.87},
+		{Provider: "deepseek", Model: "deepseek-v4-pro-none", InputPerM: 0.435, OutputPerM: 0.87, CachedInputPerM: 0.003625, CacheWritePerM: 0.435, ReasoningPerM: 0.87},
 	}
 }
 

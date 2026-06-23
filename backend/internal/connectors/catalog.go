@@ -211,7 +211,7 @@ func apiKeyProviders() []ProviderSpec {
 		{ID: "deepseek", DisplayName: "DeepSeek", Alias: "ds", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.deepseek.com", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#4D6BFE", Website: "https://deepseek.com", APIKeyURL: "https://platform.deepseek.com/api_keys",
-			InputPerM: 0.27, OutputPerM: 1.1},
+			InputPerM: 0.14, OutputPerM: 0.28},
 		{ID: "glm", DisplayName: "GLM Coding", Alias: "glm", Dialect: core.DialectAnthropic,
 			BaseURL: "https://api.z.ai/api/anthropic/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#2563EB", Website: "https://open.bigmodel.cn", APIKeyURL: "https://open.bigmodel.cn/usercenter/apikeys",

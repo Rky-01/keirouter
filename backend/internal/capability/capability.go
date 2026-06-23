@@ -33,6 +33,7 @@ var rules = []rule{
 	{"o4", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}, false},
 	{"claude", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapLongContext}, false},
 	{"gemini", []core.Capability{core.CapToolCalling, core.CapVision, core.CapAudioInput, core.CapLongContext}, false},
+	{"deepseek-v4", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapLongContext}, false},
 	{"deepseek", []core.Capability{core.CapToolCalling, core.CapReasoning}, false},
 	{"glm", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
 	{"minimax", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},

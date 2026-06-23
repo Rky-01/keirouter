@@ -1,8 +1,9 @@
 package transform
 
 import (
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
+	"bytes"
 	"fmt"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"io"
 	"strings"
 
@@ -18,17 +19,24 @@ func (OpenAICodec) Dialect() core.Dialect { return core.DialectOpenAI }
 // ---- wire types -------------------------------------------------------------
 
 type oaiRequest struct {
-	Model       string        `json:"model"`
-	Messages    []oaiMessage  `json:"messages"`
-	Tools       []oaiTool     `json:"tools,omitempty"`
-	ToolChoice  any           `json:"tool_choice,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	Stop        []string      `json:"stop,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
-	StreamOpts  *oaiStreamOpt `json:"stream_options,omitempty"`
-	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []oaiMessage    `json:"messages"`
+	Tools           []oaiTool       `json:"tools,omitempty"`
+	ToolChoice      any             `json:"tool_choice,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	MaxTokens       *int            `json:"max_tokens,omitempty"`
+	Stop            []string        `json:"stop,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	StreamOpts      *oaiStreamOpt   `json:"stream_options,omitempty"`
+	ResponseFormat  json.RawMessage `json:"response_format,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	Thinking        *oaiThinking    `json:"thinking,omitempty"`
+	ExtraBody       map[string]any  `json:"extra_body,omitempty"`
+}
+
+type oaiThinking struct {
+	Type string `json:"type,omitempty"`
 }
 
 type oaiStreamOpt struct {
@@ -36,11 +44,11 @@ type oaiStreamOpt struct {
 }
 
 type oaiMessage struct {
-	Role       string        `json:"role"`
+	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content,omitempty"`
-	Name       string        `json:"name,omitempty"`
-	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  []oaiToolCall   `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 	// ReasoningContent carries thinking/reasoning text that must be echoed
 	// back on follow-up turns for DeepSeek, MiniMax, and similar providers.
 	// Omitted when empty to avoid 400 errors on providers that don't support it.
@@ -51,8 +59,8 @@ type oaiToolCall struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	} `json:"function"`
 }
 
@@ -81,6 +89,16 @@ func (OpenAICodec) ParseRequest(body []byte) (*core.ChatRequest, error) {
 		Stop:        raw.Stop,
 		Stream:      raw.Stream,
 		ToolChoice:  raw.ToolChoice,
+	}
+	if raw.ReasoningEffort != "" {
+		req.Reasoning = &core.ReasoningConfig{Effort: raw.ReasoningEffort}
+	} else if raw.Thinking != nil && raw.Thinking.Type != "" {
+		switch strings.ToLower(raw.Thinking.Type) {
+		case "disabled":
+			req.Reasoning = &core.ReasoningConfig{Effort: "none"}
+		case "enabled":
+			req.Reasoning = &core.ReasoningConfig{Effort: "auto"}
+		}
 	}
 
 	for _, t := range raw.Tools {
@@ -137,7 +155,7 @@ func parseOAIMessage(m oaiMessage) (msg core.Message, isSystem bool, sysText str
 			ToolCall: &core.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
-				Arguments: json.RawMessage(tc.Function.Arguments),
+				Arguments: normalizeOpenAIToolArguments(tc.Function.Arguments),
 			},
 		})
 	}
@@ -332,13 +350,24 @@ func (c OpenAICodec) RenderRequestForProvider(req *core.ChatRequest, providerID 
 	if needsJSONSchemaFallback(providerID, req.ResponseFormat) {
 		clone := *req
 		clone.ResponseFormat = fallbackResponseFormat(req.ResponseFormat)
-		return renderOAIRequest(&clone, injectReasoning)
+		return renderOAIRequestForProvider(&clone, providerID, injectReasoning)
 	}
-	return renderOAIRequest(req, injectReasoning)
+	return renderOAIRequestForProvider(req, providerID, injectReasoning)
 }
 
 func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	return renderOAIRequest(req, false)
+}
+
+func renderOAIRequestForProvider(req *core.ChatRequest, providerID string, injectReasoning bool) ([]byte, error) {
+	out, err := buildOAIRequest(req, injectReasoning)
+	if err != nil {
+		return nil, err
+	}
+	if injectReasoning {
+		applyDeepSeekRequestFixes(out, req, providerID)
+	}
+	return json.Marshal(out)
 }
 
 // renderOAIRequest renders a canonical request to the OpenAI wire format. When
@@ -347,14 +376,22 @@ func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 // don't reject the follow-up turn with a 400. Messages with genuine reasoning
 // are left untouched so the real chain-of-thought is preserved.
 func renderOAIRequest(req *core.ChatRequest, injectReasoning bool) ([]byte, error) {
+	out, err := buildOAIRequest(req, injectReasoning)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(out)
+}
+
+func buildOAIRequest(req *core.ChatRequest, injectReasoning bool) (*oaiRequest, error) {
 	out := oaiRequest{
-		Model:       req.Model,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   req.MaxTokens,
-		Stop:        req.Stop,
-		Stream:      req.Stream,
-		ToolChoice:  req.ToolChoice,
+		Model:          req.Model,
+		Temperature:    req.Temperature,
+		TopP:           req.TopP,
+		MaxTokens:      req.MaxTokens,
+		Stop:           req.Stop,
+		Stream:         req.Stream,
+		ToolChoice:     req.ToolChoice,
 		ResponseFormat: req.ResponseFormat,
 	}
 	// Note: stream_options with include_usage is intentionally omitted. Many
@@ -383,9 +420,145 @@ func renderOAIRequest(req *core.ChatRequest, injectReasoning bool) ([]byte, erro
 		out.Tools = append(out.Tools, tool)
 	}
 
-	return json.Marshal(out)
+	return &out, nil
 }
 
+func applyDeepSeekRequestFixes(out *oaiRequest, req *core.ChatRequest, providerID string) {
+	applyDeepSeekThinking(out, req, providerID)
+	normalizeDeepSeekToolMessages(out.Messages)
+	out.Messages = fillMissingDeepSeekToolResponses(out.Messages)
+}
+
+func applyDeepSeekThinking(out *oaiRequest, req *core.ChatRequest, providerID string) {
+	if req.Reasoning != nil {
+		effort := strings.ToLower(req.Reasoning.Effort)
+		if effort == "none" || effort == "off" {
+			out.Thinking = &oaiThinking{Type: "disabled"}
+			out.ReasoningEffort = ""
+		} else {
+			out.Thinking = &oaiThinking{Type: "enabled"}
+			if effort == "max" || effort == "xhigh" {
+				out.ReasoningEffort = "max"
+			} else {
+				out.ReasoningEffort = "high"
+			}
+		}
+	}
+
+	if providerID != "deepseek" {
+		return
+	}
+	switch strings.ToLower(req.Model) {
+	case "deepseek-v4-pro-max":
+		out.Model = "deepseek-v4-pro"
+		out.Thinking = nil
+		out.ReasoningEffort = "max"
+		setDeepSeekExtraThinking(out, "enabled")
+	case "deepseek-v4-pro-none":
+		out.Model = "deepseek-v4-pro"
+		out.Thinking = nil
+		out.ReasoningEffort = ""
+		setDeepSeekExtraThinking(out, "disabled")
+	}
+}
+
+func setDeepSeekExtraThinking(out *oaiRequest, typ string) {
+	if out.ExtraBody == nil {
+		out.ExtraBody = map[string]any{}
+	}
+	out.ExtraBody["thinking"] = map[string]any{"type": typ}
+}
+
+func normalizeDeepSeekToolMessages(messages []oaiMessage) {
+	for i := range messages {
+		msg := &messages[i]
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			msg.ToolCallID = sanitizeDeepSeekToolID(msg.ToolCallID, i, 0, "")
+		}
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		for j := range msg.ToolCalls {
+			tc := &msg.ToolCalls[j]
+			name := firstNonEmpty(tc.Function.Name, "tool")
+			tc.ID = sanitizeDeepSeekToolID(tc.ID, i, j, name)
+			if tc.Type == "" {
+				tc.Type = "function"
+			}
+			tc.Function.Arguments = ensureToolArgumentsJSONString(tc.Function.Arguments)
+		}
+	}
+}
+
+func sanitizeDeepSeekToolID(id string, msgIndex, tcIndex int, toolName string) string {
+	var b strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() > 0 {
+		return b.String()
+	}
+	name := sanitizeDeepSeekToolID(toolName, msgIndex, tcIndex, "")
+	if name != "" {
+		return fmt.Sprintf("call_msg%d_tc%d_%s", msgIndex, tcIndex, name)
+	}
+	return fmt.Sprintf("call_msg%d_tc%d", msgIndex, tcIndex)
+}
+
+func ensureToolArgumentsJSONString(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		trimmed = []byte("{}")
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		if s == "" {
+			s = "{}"
+		}
+		out, _ := json.Marshal(s)
+		return out
+	}
+	out, _ := json.Marshal(string(trimmed))
+	return out
+}
+
+func fillMissingDeepSeekToolResponses(messages []oaiMessage) []oaiMessage {
+	var out []oaiMessage
+	for i, msg := range messages {
+		out = append(out, msg)
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		next := oaiMessage{}
+		if i+1 < len(messages) {
+			next = messages[i+1]
+		}
+		for _, id := range deepSeekToolCallIDs(msg) {
+			if hasDeepSeekToolResult(next, id) {
+				continue
+			}
+			content, _ := json.Marshal("")
+			out = append(out, oaiMessage{Role: "tool", ToolCallID: id, Content: content})
+		}
+	}
+	return out
+}
+
+func deepSeekToolCallIDs(msg oaiMessage) []string {
+	ids := make([]string, 0, len(msg.ToolCalls))
+	for _, tc := range msg.ToolCalls {
+		if tc.ID != "" {
+			ids = append(ids, tc.ID)
+		}
+	}
+	return ids
+}
+
+func hasDeepSeekToolResult(msg oaiMessage, id string) bool {
+	return msg.Role == "tool" && msg.ToolCallID == id
+}
 
 func renderOAIMessage(m core.Message) oaiMessage {
 	out := oaiMessage{Role: string(m.Role), Name: m.Name}
@@ -417,7 +590,7 @@ func renderOAIMessage(m core.Message) oaiMessage {
 			tc.ID = p.ToolCall.ID
 			tc.Type = "function"
 			tc.Function.Name = p.ToolCall.Name
-			tc.Function.Arguments = string(p.ToolCall.Arguments)
+			tc.Function.Arguments = ensureToolArgumentsJSONString(p.ToolCall.Arguments)
 			out.ToolCalls = append(out.ToolCalls, tc)
 		case core.PartToolResult:
 			out.Role = "tool"
@@ -462,12 +635,12 @@ type oaiResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Role      string        `json:"role"`
-			Content   string        `json:"content"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
 			// ReasoningContent carries thinking/reasoning text from models
 			// that expose it as a structured field (DeepSeek, some MiMo).
 			ReasoningContent string        `json:"reasoning_content"`
-			ToolCalls []oaiToolCall `json:"tool_calls"`
+			ToolCalls        []oaiToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -475,10 +648,10 @@ type oaiResponse struct {
 }
 
 type oaiUsage struct {
-	PromptTokens            int `json:"prompt_tokens"`
-	CompletionTokens        int `json:"completion_tokens"`
-	TotalTokens             int `json:"total_tokens"`
-	PromptTokensDetails     *struct {
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
 }
@@ -536,7 +709,7 @@ func (OpenAICodec) buildResponse(raw oaiResponse, model string) (*core.ChatRespo
 			ToolCall: &core.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
-				Arguments: json.RawMessage(tc.Function.Arguments),
+				Arguments: normalizeOpenAIToolArguments(tc.Function.Arguments),
 			},
 		})
 	}

@@ -73,8 +73,9 @@ var providerModels = map[string][]ModelSpec{
 		m("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
 	},
 	"deepseek": {
-		m("deepseek-chat", "DeepSeek Chat"), m("deepseek-reasoner", "DeepSeek Reasoner"),
-		m("deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-v4-flash", "DeepSeek V4 Flash"),
+		m("deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-v4-pro-max", "DeepSeek V4 Pro Max"),
+		m("deepseek-v4-pro-none", "DeepSeek V4 Pro No Thinking"), m("deepseek-v4-flash", "DeepSeek V4 Flash"),
+		m("deepseek-chat", "DeepSeek V3.2 Chat"), m("deepseek-reasoner", "DeepSeek V3.2 Reasoner"),
 	},
 	"glm":    {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM 4.7"), m("glm-4.6v", "GLM 4.6V (Vision)")},
 	"glm-cn": {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM-4.7"), m("glm-4.6", "GLM-4.6"), m("glm-4.5-air", "GLM-4.5-Air")},

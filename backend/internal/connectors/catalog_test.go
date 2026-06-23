@@ -79,8 +79,32 @@ func TestFindModel(t *testing.T) {
 	if _, ok := FindModel("commandcode", "deepseek/deepseek-v4-pro"); !ok {
 		t.Error("expected to find commandcode/deepseek/deepseek-v4-pro")
 	}
+	if _, ok := FindModel("deepseek", "deepseek-v4-pro-max"); !ok {
+		t.Error("expected to find deepseek/deepseek-v4-pro-max")
+	}
+	if _, ok := FindModel("deepseek", "deepseek-v4-pro-none"); !ok {
+		t.Error("expected to find deepseek/deepseek-v4-pro-none")
+	}
 	if _, ok := FindModel("openai", "nonexistent-model"); ok {
 		t.Error("expected miss for nonexistent model")
+	}
+}
+
+func TestDeepSeekPricing(t *testing.T) {
+	flash, ok := ModelPriceByProviderModel("deepseek", "deepseek-v4-flash")
+	if !ok {
+		t.Fatal("missing deepseek-v4-flash price")
+	}
+	if flash.InputPerM != 0.14 || flash.OutputPerM != 0.28 || flash.CachedInputPerM != 0.0028 || flash.ReasoningPerM != 0.28 {
+		t.Fatalf("unexpected deepseek-v4-flash pricing: %+v", flash)
+	}
+
+	pro, ok := ModelPriceByProviderModel("deepseek", "deepseek-v4-pro")
+	if !ok {
+		t.Fatal("missing deepseek-v4-pro price")
+	}
+	if pro.InputPerM != 0.435 || pro.OutputPerM != 0.87 || pro.CachedInputPerM != 0.003625 || pro.ReasoningPerM != 0.87 {
+		t.Fatalf("unexpected deepseek-v4-pro pricing: %+v", pro)
 	}
 }
 
