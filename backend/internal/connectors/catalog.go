@@ -55,7 +55,11 @@ type ProviderSpec struct {
 	Regions []RegionOption `json:"regions,omitempty"`
 	// DefaultRegion is the pre-selected region id when Regions is non-empty.
 	DefaultRegion string `json:"default_region,omitempty"`
+	// Custom marks user-defined dynamic provider instances (not part of the
+	// built-in static catalog). These are editable and deletable.
+	Custom bool `json:"custom,omitempty"`
 }
+
 
 // llm is shorthand for the default LLM-only service kind slice.
 func llm(extra ...core.ServiceKind) []core.ServiceKind {
@@ -72,14 +76,18 @@ func llm(extra ...core.ServiceKind) []core.ServiceKind {
 // discovery and account management, but are not routable until a dedicated
 // connector lands.
 func Catalog() []ProviderSpec {
-	return append(append(append(append(append(
+	built := append(append(append(append(append(
 		pinnedProviders(),
 		freeProviders()...),
 		freeTierProviders()...),
 		oauthProviders()...),
 		apiKeyProviders()...),
 		mediaProviders()...)
+	// Append user-defined dynamic provider instances so they participate in
+	// discovery, account management, and provider/alias resolution.
+	return append(built, dynamicSpecs()...)
 }
+
 
 // pinnedProviders are always-visible entries shown at the top of the listing.
 func pinnedProviders() []ProviderSpec {

@@ -9,7 +9,9 @@ import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
 import { CodebuddyConnectModal } from "../components/CodebuddyConnectModal";
 import { CursorConnectModal } from "../components/CursorConnectModal";
 import { CommandCodeConnectModal } from "../components/CommandCodeConnectModal";
+import { CustomModelsSection } from "../components/CustomModelsSection";
 import { useToast } from "../components/Toast";
+
 import {
   Card,
   CardHeader,
@@ -609,9 +611,13 @@ export function ProviderDetailPage() {
             )}
           </Card>
         )}
+
+        {/* User-registered custom models (separate from the catalog list). */}
+        <CustomModelsSection provider={provider} />
       </div>
 
       {oauthOpen && oauthProvider && (
+
         <ConnectModal provider={oauthProvider} onClose={() => setOauthOpen(false)} />
       )}
       {kiroOpen && <KiroConnectModal onClose={() => setKiroOpen(false)} />}

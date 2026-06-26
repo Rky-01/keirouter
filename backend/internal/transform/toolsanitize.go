@@ -30,6 +30,51 @@ func NewToolArgSanitizer() *ToolArgSanitizer {
 	return &ToolArgSanitizer{buffers: make(map[int]*toolBuffer)}
 }
 
+// sanitizableToolNames is the set of tool names whose streamed arguments need
+// finish-time repair (string→int coercion, clamping, type fixes). Only requests
+// carrying one of these tools require the buffer-until-finish path; everything
+// else can stream tool-call deltas straight through.
+var sanitizableToolNames = map[string]struct{}{
+	"Read":  {},
+	"Write": {},
+	"Edit":  {},
+	"Bash":  {},
+	"Glob":  {},
+	"Grep":  {},
+}
+
+// SanitizableToolsPresent reports whether any of the given tool names requires
+// argument sanitization. When false, streamed tool-call deltas can be forwarded
+// incrementally without buffering, since no finish-time repair is needed.
+func SanitizableToolsPresent(toolNames []string) bool {
+	for _, name := range toolNames {
+		if _, ok := sanitizableToolNames[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// IncrementalToolStreamingSafe reports whether a client dialect can consume
+// tool-call argument deltas as they arrive, without the gateway first
+// assembling each call's arguments into one complete JSON object.
+//
+// OpenAI (chat completions), OpenAI Responses, and Anthropic all define a
+// streaming wire format for partial tool arguments (delta tool_calls,
+// function_call_arguments.delta, input_json_delta), so forwarding fragments is
+// native and safe. Other dialects (Gemini, Ollama, and the provider-native
+// formats) render each tool call as a single object with complete arguments, so
+// fragments would produce malformed output — those must keep buffering until the
+// call completes.
+func IncrementalToolStreamingSafe(d core.Dialect) bool {
+	switch d {
+	case core.DialectOpenAI, core.DialectOpenAIResponses, core.DialectAnthropic:
+		return true
+	default:
+		return false
+	}
+}
+
 // Process handles one streaming chunk. For ChunkToolCall, it buffers arguments
 // and emits sanitized chunks via the emit callback. All other chunk types are
 // passed through directly.

@@ -190,27 +190,35 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 
 		// First chunk for a tool call (carries ID and Name) — open a new
 		// tool_use content block. Close any previously open tool block first.
+		// Open a new tool_use block only when the ID actually changes. Some
+		// upstreams (e.g. Kiro) repeat the same tool ID on the arguments
+		// continuation chunk; treating a repeated ID as a new block would
+		// close the real block with empty input and open a nameless duplicate.
 		if chunk.ToolCall.ID != "" {
-			if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
-				events = append(events, antEvent("content_block_stop", map[string]any{
-					"type": "content_block_stop", "index": state.ToolIndex,
+			openID, _ := state.Custom["tool_id"].(string)
+			if openID != chunk.ToolCall.ID {
+				if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
+					events = append(events, antEvent("content_block_stop", map[string]any{
+						"type": "content_block_stop", "index": state.ToolIndex,
+					}))
+					state.ToolIndex++
+				}
+				if state.Custom == nil {
+					state.Custom = map[string]any{}
+				}
+				state.Custom["tool_open"] = true
+				state.Custom["tool_id"] = chunk.ToolCall.ID
+				events = append(events, antEvent("content_block_start", map[string]any{
+					"type":  "content_block_start",
+					"index": state.ToolIndex,
+					"content_block": map[string]any{
+						"type":  "tool_use",
+						"id":    chunk.ToolCall.ID,
+						"name":  chunk.ToolCall.Name,
+						"input": map[string]any{},
+					},
 				}))
-				state.ToolIndex++
 			}
-			if state.Custom == nil {
-				state.Custom = map[string]any{}
-			}
-			state.Custom["tool_open"] = true
-			events = append(events, antEvent("content_block_start", map[string]any{
-				"type":  "content_block_start",
-				"index": state.ToolIndex,
-				"content_block": map[string]any{
-					"type":  "tool_use",
-					"id":    chunk.ToolCall.ID,
-					"name":  chunk.ToolCall.Name,
-					"input": map[string]any{},
-				},
-			}))
 		}
 
 		// Emit argument deltas (skip empty ones). Partial JSON fragments

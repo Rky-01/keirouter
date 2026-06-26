@@ -371,6 +371,21 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	// sanitized JSON when each tool call completes. This fixes malformed
 	// arguments from non-Anthropic models (e.g., Read.limit as string).
 	sanitizer := transform.NewToolArgSanitizer()
+
+	// Decide whether tool-call deltas can stream straight through to the client
+	// instead of being buffered until each call finishes. Buffering only earns
+	// its keep when (a) the client dialect needs complete argument JSON per call
+	// (Gemini, Ollama, native formats), or (b) a tool whose arguments require
+	// finish-time repair is present (the Claude Code file/shell tools). When
+	// neither holds, forwarding fragments matches the client's native streaming
+	// format and removes the wait for tool calls to complete.
+	toolNames := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		toolNames = append(toolNames, t.Name)
+	}
+	passThroughTools := transform.IncrementalToolStreamingSafe(codec.Dialect()) &&
+		!transform.SanitizableToolsPresent(toolNames)
+
 	// ThinkTagState strips <think>...</think> tags from streaming content.
 	// Some models (MiMo, QwQ) embed reasoning as XML tags in the content
 	// field instead of using a structured reasoning_content field.
@@ -427,11 +442,22 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 			totalTokens = chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens
 		}
 		chunkCount++
-		sanitizer.Process(chunk, renderChunk)
+		if passThroughTools {
+			// Forward every chunk (including tool-call deltas) the moment it
+			// arrives — the client dialect consumes partial tool arguments
+			// natively and no finish-time repair is needed.
+			renderChunk(chunk)
+		} else {
+			sanitizer.Process(chunk, renderChunk)
+		}
 	}
 
-	// Flush any remaining buffered tool calls and think-tag buffer.
-	sanitizer.Flush(renderChunk)
+	// Flush any remaining buffered tool calls and think-tag buffer. When tool
+	// calls were passed through directly there is nothing buffered to flush.
+	if !passThroughTools {
+		sanitizer.Flush(renderChunk)
+	}
+
 	// Flush think-tag state — emit any remaining buffered text.
 	for _, fc := range thinkFilter.Flush() {
 		if fc.Type == core.ChunkThinking {

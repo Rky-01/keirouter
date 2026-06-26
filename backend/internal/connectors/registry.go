@@ -22,20 +22,28 @@ func NewRegistry(conns ...core.Connector) *Registry {
 	return &Registry{byID: m}
 }
 
-// Get returns the connector for a provider id.
+// Get returns the connector for a provider id. Built-in connectors are resolved
+// from the static map; user-defined dynamic provider instances are built on
+// demand so newly-added custom providers are routable without a restart.
 func (r *Registry) Get(provider string) (core.Connector, error) {
-	c, ok := r.byID[provider]
-	if !ok {
-		return nil, fmt.Errorf("connectors: no connector for provider %q", provider)
+	if c, ok := r.byID[provider]; ok {
+		return c, nil
 	}
-	return c, nil
+	if c, ok := dynamicConnector(provider); ok {
+		return c, nil
+	}
+	return nil, fmt.Errorf("connectors: no connector for provider %q", provider)
 }
 
-// Has reports whether a provider is registered.
+// Has reports whether a provider is registered (built-in or dynamic).
 func (r *Registry) Has(provider string) bool {
-	_, ok := r.byID[provider]
+	if _, ok := r.byID[provider]; ok {
+		return true
+	}
+	_, ok := DynamicProviderByID(provider)
 	return ok
 }
+
 
 // Providers returns the registered provider ids.
 func (r *Registry) Providers() []string {

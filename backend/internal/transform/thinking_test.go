@@ -9,10 +9,10 @@ import (
 
 func TestStripThinkTags(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantThink  []string
-		wantClean  string
+		name      string
+		input     string
+		wantThink []string
+		wantClean string
 	}{
 		{
 			name:      "no think tags",
@@ -167,7 +167,58 @@ func TestThinkTagStateOneChunk(t *testing.T) {
 	}
 }
 
+// TestThinkTagStateFastPath verifies that plain text deltas (no '<') are
+// forwarded verbatim, one chunk per feed, with nothing held back waiting for a
+// subsequent frame. This is the hot path for models that never emit inline
+// think tags and must not buffer or stall.
+func TestThinkTagStateFastPath(t *testing.T) {
+	ts := &ThinkTagState{}
+
+	deltas := []string{"Hello", " there", ", how", " are you?"}
+	for _, d := range deltas {
+		chunks := ts.ProcessFeed(d)
+		if len(chunks) != 1 {
+			t.Fatalf("ProcessFeed(%q) = %d chunks, want 1 (no holdback)", d, len(chunks))
+		}
+		if chunks[0].Type != core.ChunkText {
+			t.Errorf("ProcessFeed(%q) type = %q, want ChunkText", d, chunks[0].Type)
+		}
+		if chunks[0].Delta != d {
+			t.Errorf("ProcessFeed(%q) delta = %q, want verbatim", d, chunks[0].Delta)
+		}
+	}
+
+	// Nothing buffered — Flush must be empty.
+	if flush := ts.Flush(); len(flush) != 0 {
+		t.Errorf("Flush returned %d chunks, want 0", len(flush))
+	}
+}
+
+// TestThinkTagStateAngleBracketNotThink verifies that a '<' that does not begin
+// a <think> tag still streams correctly without being permanently held back.
+func TestThinkTagStateAngleBracketNotThink(t *testing.T) {
+	ts := &ThinkTagState{}
+
+	var got strings.Builder
+	for _, d := range []string{"a < b", " and c > d"} {
+		for _, ch := range ts.ProcessFeed(d) {
+			if ch.Type == core.ChunkText {
+				got.WriteString(ch.Delta)
+			}
+		}
+	}
+	for _, ch := range ts.Flush() {
+		if ch.Type == core.ChunkText {
+			got.WriteString(ch.Delta)
+		}
+	}
+	if got.String() != "a < b and c > d" {
+		t.Errorf("reassembled text = %q, want %q", got.String(), "a < b and c > d")
+	}
+}
+
 func assertThinkingOnly(t *testing.T, chunks []core.StreamChunk, expected string) {
+
 	t.Helper()
 	for _, ch := range chunks {
 		if ch.Type != core.ChunkThinking {
@@ -182,4 +233,3 @@ func assertNoChunks(t *testing.T, chunks []core.StreamChunk, context string) {
 		t.Errorf("%s: unexpected chunk type=%q delta=%q", context, ch.Type, ch.Delta)
 	}
 }
-

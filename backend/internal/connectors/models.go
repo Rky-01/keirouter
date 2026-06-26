@@ -291,10 +291,32 @@ var providerModels = map[string][]ModelSpec{
 	"jina-reader":  {k("jina-reader", "Jina Reader", core.ServiceFetch)},
 }
 
-// ModelsForProvider returns the curated model list for a provider id.
+// ModelsForProvider returns the curated model list for a provider id, merging
+// the static catalog with any user-registered custom models. Custom models
+// override static entries with the same id.
 func ModelsForProvider(providerID string) []ModelSpec {
-	return providerModels[providerID]
+	static := providerModels[providerID]
+	custom := dynamicModelsFor(providerID)
+	if len(custom) == 0 {
+		return static
+	}
+	if len(static) == 0 {
+		return custom
+	}
+	merged := make([]ModelSpec, 0, len(static)+len(custom))
+	customByID := make(map[string]bool, len(custom))
+	for _, m := range custom {
+		customByID[m.ID] = true
+	}
+	for _, m := range static {
+		if customByID[m.ID] {
+			continue // custom entry takes precedence
+		}
+		merged = append(merged, m)
+	}
+	return append(merged, custom...)
 }
+
 
 // ModelsByKind returns all (providerID, model) pairs across the catalog that
 // serve the given service kind, excluding hidden providers.

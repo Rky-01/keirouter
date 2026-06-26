@@ -20,7 +20,9 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/crypto"
+
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/gateway"
 	"github.com/mydisha/keirouter/backend/internal/guardrails"
@@ -102,7 +104,11 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// Construct services.
 	v := vault.New(sealer)
 	connRegistry := connectors.DefaultRegistry()
+	// Load user-defined dynamic custom providers and their custom models from
+	// the database so they are routable and discoverable immediately at startup.
+	loadCustomProviders(ctx, db, log)
 	codecs := transform.DefaultRegistry()
+
 	idSvc := identity.New(db.APIKeys())
 
 	authSvc := auth.New(db.Settings(), cfg.Security.JWTSecret, cfg.Security.SessionTTL)
@@ -628,8 +634,52 @@ func resolveFrontendDir() string {
 	return ""
 }
 
+// loadCustomProviders registers user-defined dynamic provider instances and
+// their custom models from the database into the in-memory connector catalog,
+// so they participate in discovery and routing immediately at startup.
+func loadCustomProviders(ctx context.Context, db *store.DB, log *slog.Logger) {
+	repo := db.CustomProviders()
+	providers, err := repo.ListProviders(ctx, store.DefaultTenantID)
+	if err != nil {
+		log.Warn("load custom providers failed", "err", err)
+		return
+	}
+	for _, p := range providers {
+		dialect := core.DialectOpenAI
+		if p.Dialect == string(core.DialectAnthropic) {
+			dialect = core.DialectAnthropic
+		}
+		connectors.RegisterDynamicProvider(connectors.DynamicProvider{
+			ID: p.ID, DisplayName: p.DisplayName, Alias: p.Alias, Dialect: dialect, BaseURL: p.BaseURL,
+		})
+	}
+
+	models, err := repo.ListModels(ctx, store.DefaultTenantID)
+	if err != nil {
+		log.Warn("load custom models failed", "err", err)
+		return
+	}
+	byProvider := map[string][]connectors.ModelSpec{}
+	for _, m := range models {
+		kind := core.ServiceKind(m.Kind)
+		if kind == "" {
+			kind = core.ServiceLLM
+		}
+		byProvider[m.ProviderID] = append(byProvider[m.ProviderID], connectors.ModelSpec{
+			ID: m.ModelID, Name: m.DisplayName, Kind: kind,
+		})
+	}
+	for providerID, specs := range byProvider {
+		connectors.SetDynamicModels(providerID, specs)
+	}
+	if len(providers) > 0 || len(models) > 0 {
+		log.Info("loaded custom providers", "providers", len(providers), "models", len(models))
+	}
+}
+
 // buildPricing projects the connector catalog into a meter pricing table.
 func buildPricing() map[string]meter.Price {
+
 	specs := connectors.Catalog()
 	prices := make([]meter.SpecPrice, 0, len(specs))
 	for _, s := range specs {

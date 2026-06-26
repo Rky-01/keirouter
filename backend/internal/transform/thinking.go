@@ -80,12 +80,28 @@ type ThinkTagState struct {
 // ProcessFeed ingests one streaming content delta and returns thinking and/or
 // text chunks. The caller must call Flush() when the stream ends.
 func (ts *ThinkTagState) ProcessFeed(delta string) []core.StreamChunk {
+	// Fast path: when no tag scan is in flight (not inside a think block and
+	// nothing buffered as a potential partial tag) and the delta carries no
+	// '<' that could open one, forward it verbatim with no buffering and no
+	// allocation. This is the common case for models that never emit inline
+	// think tags, so per-chunk overhead stays at zero and no token is ever
+	// held back waiting for the next frame.
+	if !ts.thinkingMode && ts.buf == "" {
+		if delta == "" {
+			return nil
+		}
+		if !strings.ContainsRune(delta, '<') {
+			return []core.StreamChunk{{Type: core.ChunkText, Delta: delta}}
+		}
+	}
+
 	ts.buf += delta
 	var chunks []core.StreamChunk
 
 	for len(ts.buf) > 0 {
 		if !ts.thinkingMode {
 			// Not in thinking mode — look for start tag.
+
 			if idx := strings.Index(ts.buf, thinkStart); idx >= 0 {
 				// Emit text before the tag.
 				if idx > 0 {

@@ -456,13 +456,21 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		callCtx := core.WithProxy(ctx, attempt.Creds)
 
 		// Zero-copy fast path: when the client dialect matches the upstream
-		// dialect, no tools are present (so no argument sanitization needed),
-		// and the connector implements DirectStreamable, we can pipe the raw
-		// SSE bytes directly to the client — bypassing all JSON parse/serialize
-		// overhead. This is the highest-throughput path for same-dialect proxying.
-		if len(attemptReq.Tools) == 0 && req.Metadata.SourceDialect == attempt.Conn.Dialect() {
+		// dialect and the connector implements DirectStreamable, we can pipe the
+		// raw SSE bytes straight to the client — bypassing all JSON
+		// parse/serialize overhead. This is the highest-throughput path for
+		// same-dialect proxying.
+		//
+		// Tool calls are safe to pass through here even when present: the
+		// upstream emits them in the same dialect the client requested, so the
+		// argument shapes already match what the client expects and no
+		// response-side sanitization is required. Cross-dialect requests (where
+		// argument normalization does matter) fall through to the channel path
+		// below.
+		if req.Metadata.SourceDialect == attempt.Conn.Dialect() {
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
+
 				if rawErr != nil {
 					pe := core.AsProviderError(rawErr)
 					lastErr = pe

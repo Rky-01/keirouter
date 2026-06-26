@@ -118,6 +118,8 @@ func (s *Server) mountAdmin(r chi.Router) {
 	s.mountOAuth(r)
 	s.mountKiro(r)
 	s.mountCustomFlows(r)
+	s.mountCustomProviders(r)
+
 
 	s.mountCLITools(r)
 
@@ -216,9 +218,12 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type modelInfo struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Kind string `json:"kind"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Kind     string `json:"kind"`
+		Custom   bool   `json:"custom,omitempty"`
+		DBID     string `json:"db_id,omitempty"`
+		Discovered bool `json:"discovered,omitempty"`
 	}
 	modelKind := func(kind core.ServiceKind) core.ServiceKind {
 		if kind == "" {
@@ -227,7 +232,17 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		return kind
 	}
 
-	// Static catalog models.
+	// User-registered custom models for this provider (db-backed). These are
+	// tracked separately so the dashboard can render an editable section.
+	customByID := map[string]store.CustomModel{}
+	if cms, cerr := s.db.CustomProviders().ListModelsByProvider(r.Context(), providerID); cerr == nil {
+		for _, cm := range cms {
+			customByID[cm.ModelID] = cm
+		}
+	}
+
+	// Static catalog models (already merged with custom models by
+	// ModelsForProvider). Flag any entry that is a user-defined custom model.
 	static := connectors.ModelsForProvider(providerID)
 	seen := map[string]bool{}
 	var out []modelInfo
@@ -236,9 +251,15 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		if kindFilter != "" && kind != kindFilter {
 			continue
 		}
-		out = append(out, modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind)})
+		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind)}
+		if cm, ok := customByID[m.ID]; ok {
+			mi.Custom = true
+			mi.DBID = cm.ID
+		}
+		out = append(out, mi)
 		seen[m.ID] = true
 	}
+
 
 	// Live model discovery (best-effort, requires a connected account).
 	if src := connectors.GetLiveModelSource(providerID); src != nil && s.accounts != nil && s.vault != nil {

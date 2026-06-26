@@ -28,7 +28,58 @@ export interface Provider {
   output_per_m: number;
   regions?: RegionOption[];
   default_region?: string;
+  // base_url is populated for user-defined custom provider instances.
+  base_url?: string;
+  // custom marks user-defined dynamic provider instances (editable/deletable).
+  custom?: boolean;
 }
+
+// ProviderModel is a single model entry returned by providerModels(). Custom
+// models carry a db_id so they can be edited/removed; discovered marks models
+// that came from the upstream /models endpoint rather than the static catalog.
+export interface ProviderModel {
+  id: string;
+  name: string;
+  kind: string;
+  custom?: boolean;
+  db_id?: string;
+  discovered?: boolean;
+}
+
+// CustomProvider is a user-defined provider instance (OpenAI- or Anthropic-
+// compatible) with its own unique id, base URL, accounts, and models.
+export interface CustomProvider {
+  id: string;
+  display_name: string;
+  alias: string;
+  dialect: string; // "openai" | "anthropic"
+  base_url: string;
+  custom: true;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// CustomModel is a user-registered model on a provider (custom or built-in).
+export interface CustomModel {
+  db_id: string;
+  provider_id: string;
+  id: string;
+  name: string;
+  kind: string;
+  context_window: number;
+  input_per_m: number;
+  output_per_m: number;
+}
+
+export interface CustomModelInput {
+  id: string;
+  name?: string;
+  kind?: string;
+  context_window?: number;
+  input_per_m?: number;
+  output_per_m?: number;
+}
+
 
 export interface BrandingSettings {
   name: string;
@@ -852,7 +903,7 @@ export const api = {
 
   providers: () => request<{ providers: Provider[] }>("GET", "/providers"),
   providerModels: (id: string, kind?: string) =>
-    request<{ models: { id: string; name: string; kind: string }[] }>(
+    request<{ models: ProviderModel[] }>(
       "GET",
       `/providers/${id}/models${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
     ),
@@ -860,6 +911,27 @@ export const api = {
     request<ProviderRoutingSettings>("GET", `/providers/${id}/routing`),
   updateProviderRouting: (id: string, patch: Partial<ProviderRoutingSettings>) =>
     request<ProviderRoutingSettings>("POST", `/providers/${id}/routing`, patch),
+
+  // Custom provider instances (dynamic OpenAI-/Anthropic-compatible providers).
+  listCustomProviders: () =>
+    request<{ providers: CustomProvider[] }>("GET", "/custom-providers"),
+  createCustomProvider: (input: { display_name: string; dialect: string; base_url: string }) =>
+    request<CustomProvider>("POST", "/custom-providers", input),
+  updateCustomProvider: (id: string, patch: { display_name?: string; alias?: string; base_url?: string }) =>
+    request<CustomProvider>("PATCH", `/custom-providers/${id}`, patch),
+  deleteCustomProvider: (id: string) =>
+    request<{ id: string; deleted: boolean }>("DELETE", `/custom-providers/${id}`),
+
+  // Custom models, attachable to any provider id (custom or built-in).
+  listCustomModels: (providerId: string) =>
+    request<{ models: CustomModel[] }>("GET", `/providers/${providerId}/custom-models`),
+  createCustomModel: (providerId: string, input: CustomModelInput) =>
+    request<CustomModel>("POST", `/providers/${providerId}/custom-models`, input),
+  updateCustomModel: (providerId: string, dbId: string, patch: Partial<CustomModelInput>) =>
+    request<CustomModel>("PATCH", `/providers/${providerId}/custom-models/${dbId}`, patch),
+  deleteCustomModel: (providerId: string, dbId: string) =>
+    request<{ db_id: string; deleted: boolean }>("DELETE", `/providers/${providerId}/custom-models/${dbId}`),
+
 
   listPlans: () => request<{ plans: Plan[] }>("GET", "/plans"),
   createPlan: (input: {

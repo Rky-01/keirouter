@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { Boxes, Search, X, AlertTriangle } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Boxes, Search, X, AlertTriangle, Plus } from "lucide-react";
 import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot } from "../components/ui";
+import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot, Button, Modal, Field, Input, Select, ErrorBanner } from "../components/ui";
+import { useToast } from "../components/Toast";
+
 
 // Popularity ranking for default sort order (lower = more popular).
 const POPULARITY: Record<string, number> = {
@@ -114,6 +116,8 @@ export function ProvidersPage() {
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [customOpen, setCustomOpen] = useState(false);
+
 
   // Count accounts per provider id so we can split connected vs available.
   const accountsByProvider = useMemo(() => {
@@ -188,7 +192,12 @@ export function ProvidersPage() {
             </button>
           )}
         </div>
+        <Button variant="ghost" className="h-9 shrink-0 px-3 text-xs" onClick={() => setCustomOpen(true)}>
+          <Plus className="h-3.5 w-3.5" />
+          New custom provider
+        </Button>
       </div>
+
 
       {providers.isLoading ? (
         <Spinner />
@@ -238,11 +247,101 @@ export function ProvidersPage() {
           </Card>
         </div>
       )}
+
+      <CreateCustomProviderModal open={customOpen} onClose={() => setCustomOpen(false)} />
     </>
   );
 }
 
+// CreateCustomProviderModal creates a new dynamic custom provider instance.
+// Each instance gets a unique id so multiple OpenAI-/Anthropic-compatible
+// endpoints stay fully isolated (own base URL, accounts, and models).
+function CreateCustomProviderModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [name, setName] = useState("");
+  const [dialect, setDialect] = useState("openai");
+  const [baseURL, setBaseURL] = useState("");
+  const [error, setError] = useState("");
+
+  const reset = () => {
+    setName("");
+    setDialect("openai");
+    setBaseURL("");
+    setError("");
+  };
+
+  const create = useMutation({
+    mutationFn: () =>
+      api.createCustomProvider({ display_name: name.trim(), dialect, base_url: baseURL.trim() }),
+    onSuccess: (p) => {
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      toast.success("Custom provider created", "Add an account and models to start routing.");
+      reset();
+      onClose();
+      navigate(`/providers/${p.id}`);
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const canSubmit = name.trim().length > 0 && baseURL.trim().length > 0 && !create.isPending;
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => { reset(); onClose(); }}
+      title="New custom provider"
+      subtitle="A dedicated instance of an OpenAI- or Anthropic-compatible endpoint. Each instance is isolated with its own base URL, accounts, and models."
+    >
+      <form
+        className="space-y-4 px-6 py-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit) create.mutate();
+        }}
+      >
+        <Field label="Name (required)">
+          <Input
+            value={name}
+            onChange={(e) => { setName(e.target.value); setError(""); }}
+            placeholder="e.g. Local vLLM or Acme Gateway"
+            autoFocus
+          />
+        </Field>
+        <Field label="Dialect">
+          <Select value={dialect} onChange={(e) => setDialect(e.target.value)}>
+            <option value="openai">OpenAI-compatible</option>
+            <option value="anthropic">Anthropic-compatible</option>
+          </Select>
+        </Field>
+        <Field label="Base URL (required)">
+          <Input
+            value={baseURL}
+            onChange={(e) => { setBaseURL(e.target.value); setError(""); }}
+            placeholder="https://llm.example.com/v1"
+          />
+        </Field>
+        <p className="text-xs text-[var(--text-muted)]">
+          Tip: add two separate instances for two endpoints of the same type — they will never share models or credentials.
+        </p>
+        {error && <ErrorBanner message={error} />}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button type="button" variant="ghost" onClick={() => { reset(); onClose(); }}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
+            <Plus className="h-4 w-4" />
+            {create.isPending ? "Creating…" : "Create provider"}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function ProviderCard({ provider: p, accountCount }: { provider: Provider; accountCount: number }) {
+
   const navigate = useNavigate();
   const connected = accountCount > 0;
 
