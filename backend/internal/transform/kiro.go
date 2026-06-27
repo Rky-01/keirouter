@@ -259,6 +259,15 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 	messages := req.Messages
 	if len(req.Tools) == 0 {
 		messages = flattenKiroToolInteractions(messages)
+	} else {
+		// Tools present: Bedrock validates that every assistant toolUse is
+		// answered by a toolResult carrying the same id on the next turn. A
+		// dangling toolUse — left behind when client-side history compaction
+		// drops the tool turn but keeps the assistant message — is rejected
+		// with TOOL_USE_RESULT_MISMATCH (HTTP 400). Synthesise an empty result
+		// for any unanswered toolUse so the pairing the validator requires is
+		// restored before the history is built.
+		messages = ensureKiroToolResults(messages)
 	}
 
 	// Resolve one collision-free name per declared tool up front. Sanitization
@@ -479,6 +488,74 @@ func kiroToolCallToText(name string, args json.RawMessage) string {
 // kiroToolResultToText renders a tool result as a readable text line.
 func kiroToolResultToText(content string) string {
 	return fmt.Sprintf("[Tool result: %s]", content)
+}
+
+// ensureKiroToolResults guarantees every assistant toolUse is answered by a
+// toolResult carrying the same id. Bedrock validates that a toolUse on one turn
+// is followed by a matching toolResult on the next; an unanswered toolUse is
+// rejected with TOOL_USE_RESULT_MISMATCH (HTTP 400). Such a dangling call
+// appears when client-side history compaction keeps an assistant message but
+// drops the tool turn that answered it, or when a tool round is interrupted
+// mid-flight.
+//
+// For each unanswered toolUse the function inserts a synthetic RoleTool message
+// holding an empty result immediately after the assistant turn, restoring the
+// pairing the validator requires. An id is treated as already answered when a
+// toolResult for it exists anywhere in the conversation (as a RoleTool message
+// or as a tool_result block embedded in a user message, the shape Anthropic
+// clients use), so genuine results are never duplicated. The input is never
+// mutated; a new slice is returned.
+func ensureKiroToolResults(messages []core.Message) []core.Message {
+	// Phase 1: collect every toolUseId that already has a result, regardless of
+	// where the result lives.
+	answered := make(map[string]bool)
+	for _, m := range messages {
+		for _, p := range m.Content {
+			if p.Type == core.PartToolResult && p.ToolResult != nil && p.ToolResult.CallID != "" {
+				answered[p.ToolResult.CallID] = true
+			}
+		}
+	}
+
+	// Phase 2: walk the conversation; after each assistant turn, append a
+	// synthetic tool result for any of its calls left unanswered.
+	out := make([]core.Message, 0, len(messages))
+	for _, m := range messages {
+		out = append(out, m)
+		if m.Role != core.RoleAssistant {
+			continue
+		}
+
+		// Preserve call order and skip ids answered or already synthesised, so
+		// an assistant emitting the same id twice yields a single result.
+		var missing []string
+		seen := make(map[string]bool)
+		for _, p := range m.Content {
+			if p.Type != core.PartToolCall || p.ToolCall == nil {
+				continue
+			}
+			id := p.ToolCall.ID
+			if id == "" || answered[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			missing = append(missing, id)
+		}
+		if len(missing) == 0 {
+			continue
+		}
+
+		parts := make([]core.ContentPart, 0, len(missing))
+		for _, id := range missing {
+			answered[id] = true
+			parts = append(parts, core.ContentPart{
+				Type:       core.PartToolResult,
+				ToolResult: &core.ToolResult{CallID: id, Content: ""},
+			})
+		}
+		out = append(out, core.Message{Role: core.RoleTool, Content: parts})
+	}
+	return out
 }
 
 // flattenKiroToolInteractions collapses every structured tool call/result in a

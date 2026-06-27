@@ -3,12 +3,18 @@
 // Anthropic-compatible, arguments are valid JSON, and every tool_use has a
 // matching tool_result.
 //
-// This mirrors 9router's ensureToolCallIds + fixMissingToolResponses logic.
+// It runs once, globally, on the canonical request — before any dialect
+// translation — so the same tool-call guarantees hold for every provider
+// (OpenAI, Anthropic, Gemini, Kiro, ...). Strict providers reject a tool_use
+// with no matching tool_result (Anthropic 400 "unexpected tool_use_id",
+// Bedrock/Kiro TOOL_USE_RESULT_MISMATCH), and OpenAI requires the tool reply to
+// immediately follow the assistant's tool_calls; normalizing here keeps all of
+// them happy.
 package normalizer
 
 import (
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"regexp"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -54,59 +60,56 @@ func SanitizeToolCallIDs(req *core.ChatRequest) {
 	}
 }
 
-// FixMissingToolResults ensures every tool_use in an assistant message has a
-// corresponding tool_result in the immediately following message. If not, it
-// inserts empty tool_result parts.
+// FixMissingToolResults guarantees every assistant tool_use is answered by a
+// matching tool_result. A dangling tool_use appears when client-side history
+// compaction keeps an assistant message but drops the tool reply, or when a
+// tool round is interrupted mid-flight; strict providers then reject the whole
+// request. For each unanswered tool_use the function inserts a synthetic
+// tool-role message holding an empty result immediately after the assistant
+// turn — the position OpenAI requires and every other dialect accepts.
+//
+// An id is treated as already answered when a tool_result for it exists
+// anywhere in the conversation: a tool-role message, or a tool_result block
+// embedded in a user message (the shape Anthropic clients use). This prevents
+// inserting a duplicate when the genuine result is present but not in the
+// immediately following message.
 func FixMissingToolResults(req *core.ChatRequest) {
-	var newMessages []core.Message
-
-	for i, msg := range req.Messages {
-		newMessages = append(newMessages, msg)
-
-		// Collect tool call IDs from this message.
-		toolCallIDs := collectToolCallIDs(msg)
-		if len(toolCallIDs) == 0 {
-			continue
-		}
-
-		// Check if the next message has matching tool results.
-		if i+1 < len(req.Messages) {
-			resultIDs := collectToolResultIDs(req.Messages[i+1])
-			missing := difference(toolCallIDs, resultIDs)
-			if len(missing) == 0 {
-				continue
-			}
-
-			// Insert empty tool results into the next message.
-			for _, id := range missing {
-				req.Messages[i+1].Content = append(req.Messages[i+1].Content, core.ContentPart{
-					Type: core.PartToolResult,
-					ToolResult: &core.ToolResult{
-						CallID:  id,
-						Content: "",
-					},
-				})
-			}
-		} else {
-			// No next message — create a synthetic tool-result message.
-			var parts []core.ContentPart
-			for _, id := range toolCallIDs {
-				parts = append(parts, core.ContentPart{
-					Type: core.PartToolResult,
-					ToolResult: &core.ToolResult{
-						CallID:  id,
-						Content: "",
-					},
-				})
-			}
-			newMessages = append(newMessages, core.Message{
-				Role:    core.RoleTool,
-				Content: parts,
-			})
+	// Phase 1: collect every call id that already has a result, wherever it lives.
+	answered := make(map[string]bool)
+	for _, msg := range req.Messages {
+		for _, id := range collectToolResultIDs(msg) {
+			answered[id] = true
 		}
 	}
 
-	req.Messages = newMessages
+	// Phase 2: after each assistant turn, append a synthetic result for any of
+	// its calls still unanswered, preserving call order and de-duplicating ids.
+	out := make([]core.Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		out = append(out, msg)
+		if msg.Role != core.RoleAssistant {
+			continue
+		}
+
+		var parts []core.ContentPart
+		seen := make(map[string]bool)
+		for _, id := range collectToolCallIDs(msg) {
+			if answered[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			answered[id] = true
+			parts = append(parts, core.ContentPart{
+				Type:       core.PartToolResult,
+				ToolResult: &core.ToolResult{CallID: id, Content: ""},
+			})
+		}
+		if len(parts) > 0 {
+			out = append(out, core.Message{Role: core.RoleTool, Content: parts})
+		}
+	}
+
+	req.Messages = out
 }
 
 // --- helpers ---
@@ -177,19 +180,4 @@ func collectToolResultIDs(msg core.Message) []string {
 		}
 	}
 	return ids
-}
-
-// difference returns elements in a that are not in b.
-func difference(a, b []string) []string {
-	set := make(map[string]bool, len(b))
-	for _, v := range b {
-		set[v] = true
-	}
-	var result []string
-	for _, v := range a {
-		if !set[v] {
-			result = append(result, v)
-		}
-	}
-	return result
 }

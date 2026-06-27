@@ -204,6 +204,75 @@ func TestFixMissingToolResults_NoNextMessage(t *testing.T) {
 	}
 }
 
+// A tool_use whose result was dropped by compaction — leaving an assistant text
+// turn between the call and the next user turn — must still get a synthetic
+// result inserted right after the assistant call turn. The previous "check i+1
+// only" logic missed this and left the tool_use dangling, 400ing strict
+// providers.
+func TestFixMissingToolResults_DanglingBetweenAssistants(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "tc1", Name: "Read"}},
+			}},
+			// Tool reply was compacted away; an assistant text turn follows.
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "let me continue"},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "ok"},
+			}},
+		},
+	}
+	FixMissingToolResults(req)
+
+	// A tool-role message carrying the result for tc1 must sit right after the
+	// first assistant turn (index 1).
+	if len(req.Messages) != 4 {
+		t.Fatalf("expected 4 messages (synthetic result inserted), got %d", len(req.Messages))
+	}
+	inserted := req.Messages[1]
+	if inserted.Role != core.RoleTool {
+		t.Fatalf("expected synthetic tool message at index 1, got role %q", inserted.Role)
+	}
+	if ids := collectToolResultIDs(inserted); len(ids) != 1 || ids[0] != "tc1" {
+		t.Errorf("expected synthetic result for tc1, got %v", ids)
+	}
+}
+
+// When the genuine result exists somewhere in the conversation — even if not in
+// the message immediately after the call — no synthetic duplicate is inserted.
+func TestFixMissingToolResults_AnsweredAnywhereNoDuplicate(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "tc1", Name: "Read"}},
+			}},
+			// Anthropic shape: the result rides inside a user message.
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "here you go"},
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: "tc1", Content: "data"}},
+			}},
+		},
+	}
+	FixMissingToolResults(req)
+
+	if len(req.Messages) != 2 {
+		t.Fatalf("expected 2 messages (no synthetic insert), got %d", len(req.Messages))
+	}
+	count := 0
+	for _, m := range req.Messages {
+		for _, id := range collectToolResultIDs(m) {
+			if id == "tc1" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one result for tc1, got %d", count)
+	}
+}
+
 func TestApply_Idempotent(t *testing.T) {
 	req := &core.ChatRequest{
 		Messages: []core.Message{

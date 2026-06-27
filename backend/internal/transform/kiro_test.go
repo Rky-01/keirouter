@@ -441,6 +441,141 @@ func TestKiro_RenderRequest_UserEmbeddedToolResult(t *testing.T) {
 	}
 }
 
+// When the client sends tools and the assistant emitted a toolUse that has no
+// matching tool_result — because client-side compaction dropped the tool turn
+// while keeping the assistant message — Bedrock rejects the request with
+// TOOL_USE_RESULT_MISMATCH (HTTP 400): "Expected toolResult blocks ... for the
+// following Ids: <id>". The codec must synthesise an empty toolResult for the
+// dangling toolUse so the pairing the validator requires is restored. This
+// reproduces the exact failure shape from the wild.
+func TestKiro_RenderRequest_InsertsMissingToolResult(t *testing.T) {
+	danglingID := "tooluse_7Q4wEdn762CavlhtroUO5F"
+	req := &core.ChatRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "read the file"}}},
+			// Assistant calls a tool, but the tool turn that answered it was
+			// compacted away — only the assistant message survives.
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "reading"},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: danglingID, Name: "Read", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "continue"}}},
+		},
+		Tools: []core.Tool{{Name: "Read", Description: "read", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	// Collect every toolUseId (assistant) and toolResult id (user) in the payload.
+	var resultIDs, toolUseIDs []string
+	collectResults := func(uim map[string]any) {
+		ctx, ok := uim["userInputMessageContext"].(map[string]any)
+		if !ok {
+			return
+		}
+		for _, tr := range asAnySlice(ctx["toolResults"]) {
+			if id, _ := tr.(map[string]any)["toolUseId"].(string); id != "" {
+				resultIDs = append(resultIDs, id)
+			}
+		}
+	}
+	for _, h := range cs["history"].([]any) {
+		hm := h.(map[string]any)
+		if uim, ok := hm["userInputMessage"].(map[string]any); ok {
+			collectResults(uim)
+		}
+		if arm, ok := hm["assistantResponseMessage"].(map[string]any); ok {
+			for _, tu := range asAnySlice(arm["toolUses"]) {
+				if id, _ := tu.(map[string]any)["toolUseId"].(string); id != "" {
+					toolUseIDs = append(toolUseIDs, id)
+				}
+			}
+		}
+	}
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	collectResults(cm)
+
+	// The assistant's toolUse must be present and answered by a toolResult.
+	if len(toolUseIDs) == 0 {
+		t.Fatalf("expected the assistant toolUse to survive; payload: %s", body)
+	}
+	for _, tuID := range toolUseIDs {
+		matched := false
+		for _, rID := range resultIDs {
+			if rID == tuID {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("assistant toolUse %q has no matching toolResult — orphaned, will 400 with TOOL_USE_RESULT_MISMATCH", tuID)
+		}
+	}
+}
+
+// A synthetic result must never be inserted when the toolUse is already answered
+// — doing so would duplicate the result and risk TOOL_DUPLICATE. The existing
+// result must be the only one for that id.
+func TestKiro_RenderRequest_DoesNotDuplicateExistingToolResult(t *testing.T) {
+	id := "tooluse_existing_1"
+	req := &core.ChatRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "go"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: id, Name: "Read", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
+			}},
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: id, Content: "real output"}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "thanks"}}},
+		},
+		Tools: []core.Tool{{Name: "Read", Description: "read", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	count := 0
+	countResults := func(uim map[string]any) {
+		ctx, ok := uim["userInputMessageContext"].(map[string]any)
+		if !ok {
+			return
+		}
+		for _, tr := range asAnySlice(ctx["toolResults"]) {
+			if got, _ := tr.(map[string]any)["toolUseId"].(string); got == id {
+				count++
+			}
+		}
+	}
+	for _, h := range cs["history"].([]any) {
+		if uim, ok := h.(map[string]any)["userInputMessage"].(map[string]any); ok {
+			countResults(uim)
+		}
+	}
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	countResults(cm)
+
+	if count != 1 {
+		t.Errorf("toolResult for %q must appear exactly once (no synthetic duplicate), got %d\npayload: %s", id, count, body)
+	}
+}
+
 // CodeWhisperer rejects tool names that don't match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$
 // with 400 "Improperly formed request". MCP tool names (dots, hyphens, long)
 // must be coerced into the accepted shape, consistently across the tool spec
