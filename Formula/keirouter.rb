@@ -1,27 +1,27 @@
-# Auto-updated by release.yml on tag v0.1.18. Do not edit manually.
+# Auto-updated by release.yml on tag v0.1.19. Do not edit manually.
 class Keirouter < Formula
   desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
   homepage "https://github.com/mydisha/keirouter"
-  version "0.1.18"
+  version "0.1.19"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.18/keirouter_v0.1.18_darwin_arm64.tar.gz"
-      sha256 "2c5036265dde53934e0e0fabb198ee81b111ffad781ac2f13393418479638a09"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.19/keirouter_v0.1.19_darwin_arm64.tar.gz"
+      sha256 "8db43180d060f3998fadecf4eca1752eab79c5672064c3e1fc9befa8998d2ba7"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.18/keirouter_v0.1.18_darwin_amd64.tar.gz"
-      sha256 "35ef072ff17a3d130635b37a1355dc6e532b3bdf30905047a3984c18ed94bbf0"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.19/keirouter_v0.1.19_darwin_amd64.tar.gz"
+      sha256 "b0b87d5ecae8f20623d09c955dba842141115cad34161c7b7a7553fb0f0fb916"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.18/keirouter_v0.1.18_linux_arm64.tar.gz"
-      sha256 "e9ffcd8c05d4351e7e87309219ae33538dd22e49fc6f8aca52ae871ad8785e50"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.19/keirouter_v0.1.19_linux_arm64.tar.gz"
+      sha256 "252863e7a2b85cf9b3fce125ac3a78cb7c210a643d72e5a207d98286891a9a38"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.18/keirouter_v0.1.18_linux_amd64.tar.gz"
-      sha256 "d57dd3dbf5976212b63bc17f6e00cb1d4fc13b06e4186884e795da79f1a564fa"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.19/keirouter_v0.1.19_linux_amd64.tar.gz"
+      sha256 "db5cd2acffe51755d8ebce267a5d485d73bfab5f3bf9d249515182172e6f3ad3"
     end
   end
 
@@ -41,6 +41,6 @@ class Keirouter < Formula
   end
 
   test do
-    assert_match "KeiRouter", shell_output("#{bin}/keirouter --help 2>&1")
+    assert_match "KeiRouter", shell_output("\#{bin}/keirouter --help 2>&1")
   end
 end
