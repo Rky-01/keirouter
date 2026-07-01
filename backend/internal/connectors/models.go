@@ -317,7 +317,6 @@ func ModelsForProvider(providerID string) []ModelSpec {
 	return append(merged, custom...)
 }
 
-
 // ModelsByKind returns all (providerID, model) pairs across the catalog that
 // serve the given service kind, excluding hidden providers.
 type ProviderModel struct {
@@ -378,7 +377,16 @@ func RegisterLiveModelSource(provider string, src LiveModelSource) {
 
 // GetLiveModelSource returns the live model source for a provider, or nil.
 func GetLiveModelSource(provider string) LiveModelSource {
-	return liveModelSources[provider]
+	if src, ok := liveModelSources[provider]; ok {
+		return src
+	}
+	// Dynamic (user-defined) OpenAI-compatible providers are not in the static
+	// registry, so build a discovery source on demand. This lets a custom
+	// provider's /models endpoint populate the catalog just like a built-in one.
+	if p, ok := DynamicProviderByID(provider); ok && p.Dialect == core.DialectOpenAI {
+		return &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL}
+	}
+	return nil
 }
 
 // QuotaEntry is one upstream quota bucket (e.g. AGENTIC_REQUEST usage).
