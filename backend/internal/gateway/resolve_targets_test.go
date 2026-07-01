@@ -1,0 +1,164 @@
+package gateway
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/mydisha/keirouter/backend/internal/dispatch"
+	"github.com/mydisha/keirouter/backend/internal/store"
+)
+
+type fakeChains struct {
+	chains []store.Chain
+	err    error
+}
+
+func (f *fakeChains) ListByTenant(_ context.Context, _ string) ([]store.Chain, error) {
+	return f.chains, f.err
+}
+
+type fakeAliases struct {
+	alias store.ModelAlias
+	err   error
+}
+
+func (f *fakeAliases) Get(_ context.Context, _ string) (store.ModelAlias, error) {
+	return f.alias, f.err
+}
+
+func TestResolveTargetsEmptyModel(t *testing.T) {
+	_, err := resolveTargets(context.Background(), &fakeChains{}, &fakeAliases{}, "t1", "  ")
+	if err == nil {
+		t.Fatal("expected error for empty model")
+	}
+	if _, ok := err.(badModelError); !ok {
+		t.Fatalf("want badModelError, got %T", err)
+	}
+}
+
+func TestResolveTargetsProviderModel(t *testing.T) {
+	res, err := resolveTargets(context.Background(), &fakeChains{}, &fakeAliases{}, "t1", "openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(res.Targets))
+	}
+	if res.Targets[0].Model != "gpt-4o" {
+		t.Fatalf("model = %q, want gpt-4o", res.Targets[0].Model)
+	}
+	if res.Targets[0].Provider == "" {
+		t.Fatal("provider should not be empty")
+	}
+}
+
+func TestResolveTargetsKeepsExtraSlashes(t *testing.T) {
+	// Vendor-namespaced model ids keep the remaining slashes in the model.
+	res, err := resolveTargets(context.Background(), &fakeChains{}, &fakeAliases{}, "t1", "openrouter/anthropic/claude-3.5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Targets) != 1 || res.Targets[0].Model != "anthropic/claude-3.5" {
+		t.Fatalf("targets = %+v, want single target model anthropic/claude-3.5", res.Targets)
+	}
+}
+
+func TestResolveTargetsChainPrefix(t *testing.T) {
+	chains := &fakeChains{chains: []store.Chain{{
+		ID:       "c1",
+		Name:     "fast",
+		Strategy: "round_robin",
+		Steps: []store.ChainStep{
+			{Position: 0, Provider: "openai", Model: "gpt-4o"},
+			{Position: 1, Provider: "anthropic", Model: "claude-3.5"},
+		},
+		FallbackProvider: "gemini",
+		FallbackModel:    "gemini-2.0",
+	}}}
+
+	res, err := resolveTargets(context.Background(), chains, &fakeAliases{}, "t1", "chain:fast")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 2 steps + 1 fallback target.
+	if len(res.Targets) != 3 {
+		t.Fatalf("got %d targets, want 3: %+v", len(res.Targets), res.Targets)
+	}
+	if res.Targets[2].Provider != "gemini" || res.Targets[2].Model != "gemini-2.0" {
+		t.Fatalf("fallback target = %+v, want gemini/gemini-2.0", res.Targets[2])
+	}
+	if res.PlanOpts.ChainID != "c1" {
+		t.Fatalf("ChainID = %q, want c1", res.PlanOpts.ChainID)
+	}
+	if res.PlanOpts.Strategy != dispatch.StrategyRoundRobin {
+		t.Fatalf("Strategy = %v, want round-robin", res.PlanOpts.Strategy)
+	}
+}
+
+func TestResolveTargetsChainDefaultStrategyIsFallback(t *testing.T) {
+	chains := &fakeChains{chains: []store.Chain{{
+		ID:   "c2",
+		Name: "safe",
+		Steps: []store.ChainStep{
+			{Position: 0, Provider: "openai", Model: "gpt-4o"},
+		},
+	}}}
+	res, err := resolveTargets(context.Background(), chains, &fakeAliases{}, "t1", "chain:safe")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.PlanOpts.Strategy != dispatch.StrategyFallback {
+		t.Fatalf("Strategy = %v, want fallback", res.PlanOpts.Strategy)
+	}
+}
+
+func TestResolveTargetsBareNameChain(t *testing.T) {
+	chains := &fakeChains{chains: []store.Chain{{
+		ID:   "c3",
+		Name: "myroute",
+		Steps: []store.ChainStep{
+			{Position: 0, Provider: "openai", Model: "gpt-4o"},
+		},
+	}}}
+	res, err := resolveTargets(context.Background(), chains, &fakeAliases{}, "t1", "myroute")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Targets) != 1 || res.Targets[0].Provider != "openai" {
+		t.Fatalf("targets = %+v, want openai/gpt-4o", res.Targets)
+	}
+}
+
+func TestResolveTargetsBareNameAlias(t *testing.T) {
+	// No matching chain, but an alias resolves.
+	chains := &fakeChains{chains: nil}
+	aliases := &fakeAliases{alias: store.ModelAlias{Alias: "gpt", Target: "openai/gpt-4o"}}
+	res, err := resolveTargets(context.Background(), chains, aliases, "t1", "gpt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Targets) != 1 || res.Targets[0].Model != "gpt-4o" {
+		t.Fatalf("targets = %+v, want openai/gpt-4o", res.Targets)
+	}
+}
+
+func TestResolveTargetsUnresolvable(t *testing.T) {
+	chains := &fakeChains{chains: nil}
+	aliases := &fakeAliases{err: errors.New("not found")}
+	_, err := resolveTargets(context.Background(), chains, aliases, "t1", "mystery")
+	if err == nil {
+		t.Fatal("expected error for unresolvable bare name")
+	}
+	if _, ok := err.(badModelError); !ok {
+		t.Fatalf("want badModelError, got %T", err)
+	}
+}
+
+func TestResolveTargetsChainNotFound(t *testing.T) {
+	chains := &fakeChains{chains: []store.Chain{{ID: "c1", Name: "other"}}}
+	_, err := resolveTargets(context.Background(), chains, &fakeAliases{}, "t1", "chain:missing")
+	if err == nil {
+		t.Fatal("expected error for missing chain")
+	}
+}
