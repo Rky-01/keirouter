@@ -269,37 +269,58 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		seen[m.ID] = true
 	}
 
-	// Live model discovery (best-effort, requires a connected account).
-	if src := connectors.GetLiveModelSource(providerID); src != nil && s.accounts != nil && s.vault != nil {
-		accs, err := s.accounts.ListByProvider(r.Context(), adminTenant, providerID)
-		if err == nil {
-			for _, acc := range accs {
-				if acc.Disabled {
-					continue
-				}
-				creds, err := s.vault.Open(acc)
-				if err != nil {
-					continue
-				}
-				ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-				models, merr := src.ListModels(ctx, creds)
-				cancel()
-				if merr != nil || len(models) == 0 {
-					continue
-				}
-				for _, lm := range models {
-					kind := modelKind(lm.Kind)
-					if kindFilter != "" && kind != kindFilter {
-						continue
-					}
-					if seen[lm.ID] {
-						continue
-					}
-					out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind)})
-					seen[lm.ID] = true
-				}
-				break // only use first valid account
+	// Live model discovery (best-effort). A connected account's credentials are
+	// preferred since most upstreams gate /models behind auth. When no account
+	// yields models and nothing else is in the catalog, fall back to an
+	// unauthenticated fetch so providers whose /models endpoint is public (e.g.
+	// sumopod) still populate before an account is connected.
+	if src := connectors.GetLiveModelSource(providerID); src != nil {
+		appendLive := func(creds core.Credentials) bool {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			models, merr := src.ListModels(ctx, creds)
+			cancel()
+			if merr != nil || len(models) == 0 {
+				return false
 			}
+			added := false
+			for _, lm := range models {
+				kind := modelKind(lm.Kind)
+				if kindFilter != "" && kind != kindFilter {
+					continue
+				}
+				if seen[lm.ID] {
+					continue
+				}
+				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind)})
+				seen[lm.ID] = true
+				added = true
+			}
+			return added
+		}
+
+		discovered := false
+		if s.accounts != nil && s.vault != nil {
+			if accs, err := s.accounts.ListByProvider(r.Context(), adminTenant, providerID); err == nil {
+				for _, acc := range accs {
+					if acc.Disabled {
+						continue
+					}
+					creds, oerr := s.vault.Open(acc)
+					if oerr != nil {
+						continue
+					}
+					if appendLive(creds) {
+						discovered = true
+						break // only use first valid account
+					}
+				}
+			}
+		}
+
+		// Public fallback: only when we have nothing else to show, to avoid an
+		// extra upstream round-trip for providers that already have models.
+		if !discovered && len(out) == 0 {
+			appendLive(core.Credentials{})
 		}
 	}
 

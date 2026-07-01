@@ -108,28 +108,7 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 // the ~4 chars/token heuristic over system text, message content, tool-call
 // arguments, and tool results.
 func estimateInputTokens(req *core.ChatRequest) int {
-	if req == nil {
-		return 0
-	}
-	chars := len(req.System)
-	for _, m := range req.Messages {
-		for _, part := range m.Content {
-			chars += len(part.Text)
-			if part.ToolCall != nil {
-				chars += len(part.ToolCall.Arguments)
-			}
-			if part.ToolResult != nil {
-				chars += len(part.ToolResult.Content)
-			}
-		}
-	}
-	for _, t := range req.Tools {
-		chars += len(t.Name) + len(t.Description) + len(t.Parameters)
-	}
-	if chars <= 0 {
-		return 0
-	}
-	return (chars + 3) / 4
+	return core.EstimatePromptTokens(req)
 }
 
 // handleOpenAIResponses serves /v1/responses in the OpenAI Responses dialect
@@ -190,7 +169,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		fmt.Sprintf("Model:    %s\nMessages: %d\nStream:   %v\nTenant:   %s\nKey:      %s (%s)",
 			req.Model, len(req.Messages), req.Stream, tenantID, key.Name, key.ID))
 
-	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, tenantID, req.Model)
+	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, s.latencyReader(), tenantID, req.Model)
 	if err != nil {
 		var bad badModelError
 		if errors.As(err, &bad) {
@@ -680,7 +659,7 @@ func (s *Server) handleKeyUsage(w http.ResponseWriter, r *http.Request) {
 		modelOut = append(modelOut, map[string]any{
 			"provider": m.Provider, "model": m.Model,
 			"total_requests": m.TotalRequests,
-			"prompt_tokens": m.PromptTokens, "completion_tokens": m.CompletionTokens,
+			"prompt_tokens":  m.PromptTokens, "completion_tokens": m.CompletionTokens,
 			"cost_usd": float64(m.CostMicros) / 1_000_000,
 		})
 	}

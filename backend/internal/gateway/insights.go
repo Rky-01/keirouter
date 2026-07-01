@@ -370,6 +370,7 @@ func bucketTimeline(points []store.TimeBucket, from, to time.Time, n int) []time
 func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
+	provider := r.URL.Query().Get("provider")
 	since := sinceForPeriod(period, tz)
 	ctx := r.Context()
 
@@ -377,6 +378,15 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if provider != "" {
+		filtered := accs[:0]
+		for _, a := range accs {
+			if a.Provider == provider {
+				filtered = append(filtered, a)
+			}
+		}
+		accs = filtered
 	}
 	byAcct, err := s.usage.ByAccount(ctx, adminTenant, since)
 	if err != nil {

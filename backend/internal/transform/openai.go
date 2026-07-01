@@ -91,6 +91,14 @@ func (OpenAICodec) ParseRequest(body []byte) (*core.ChatRequest, error) {
 		Stream:      raw.Stream,
 		ToolChoice:  raw.ToolChoice,
 	}
+	// stream_options.include_usage: the client opts in to a usage event on the
+	// streaming response. We don't forward this upstream (many OpenAI-compatible
+	// providers 400 on it — see renderOAIRequest), but the pipeline honors it by
+	// guaranteeing a final usage event, synthesizing an estimate if the provider
+	// omits one.
+	if raw.Stream && raw.StreamOpts != nil && raw.StreamOpts.IncludeUsage {
+		req.IncludeUsage = true
+	}
 	if raw.ReasoningEffort != "" {
 		req.Reasoning = &core.ReasoningConfig{Effort: raw.ReasoningEffort}
 	} else if raw.Thinking != nil && raw.Thinking.Type != "" {

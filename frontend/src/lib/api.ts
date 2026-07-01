@@ -1093,6 +1093,8 @@ export const api = {
 
   quota: (period: string) =>
     request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}&tz=${browserTZ()}`),
+  quotaByProvider: (provider: string) =>
+    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=today&tz=${browserTZ()}&provider=${provider}`),
 
   consoleLog: () => request<{ logs: ConsoleLogEntry[] }>("GET", "/console"),
 

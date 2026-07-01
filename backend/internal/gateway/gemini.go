@@ -67,7 +67,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		RequestID:     chimiddleware.GetReqID(r.Context()),
 	}
 
-	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, tenantID, req.Model)
+	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, s.latencyReader(), tenantID, req.Model)
 	if err != nil {
 		var bad badModelError
 		if errors.As(err, &bad) {

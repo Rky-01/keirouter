@@ -306,3 +306,36 @@ func TestOpenAICompatible_ValidateNoAuthTrustsModels200(t *testing.T) {
 	require.NoError(t, c.Validate(context.Background(), core.Credentials{}))
 	require.False(t, *chatProbed, "no-auth accounts should not issue a chat probe")
 }
+
+func TestOpenAICompatibleModelSource_ListModelsPublicNoCreds(t *testing.T) {
+	// A provider whose /models endpoint is public (e.g. sumopod) must be
+	// discoverable without credentials, so the model catalog populates before
+	// an account is connected.
+	srv, _ := publicModelsServer(t, "good-key")
+	src := &OpenAICompatibleModelSource{provider: "sumopod", defaultBase: srv.URL}
+
+	models, err := src.ListModels(context.Background(), core.Credentials{})
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.Equal(t, "m1", models[0].ID)
+	require.Equal(t, core.ServiceLLM, models[0].Kind)
+}
+
+func TestGetLiveModelSource_DynamicOpenAIProvider(t *testing.T) {
+	id := "custom-openai-testdisco"
+	RegisterDynamicProvider(DynamicProvider{
+		ID:      id,
+		Dialect: core.DialectOpenAI,
+		BaseURL: "https://example.test/v1",
+	})
+	t.Cleanup(func() { UnregisterDynamicProvider(id) })
+
+	src := GetLiveModelSource(id)
+	require.NotNil(t, src, "dynamic OpenAI-compatible providers should get a live model source")
+
+	// A dynamic Anthropic provider has no OpenAI-style /models discovery.
+	aid := "custom-anthropic-testdisco"
+	RegisterDynamicProvider(DynamicProvider{ID: aid, Dialect: core.DialectAnthropic, BaseURL: "https://example.test"})
+	t.Cleanup(func() { UnregisterDynamicProvider(aid) })
+	require.Nil(t, GetLiveModelSource(aid))
+}
