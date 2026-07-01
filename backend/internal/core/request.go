@@ -54,6 +54,13 @@ type ChatRequest struct {
 	// Stream requests an incremental SSE response.
 	Stream bool `json:"stream"`
 
+	// IncludeUsage reflects the client's opt-in to receive a usage event on the
+	// streaming response (OpenAI's stream_options.include_usage). When set, the
+	// pipeline guarantees a final usage event is emitted to the client even if
+	// the upstream provider never reports one — synthesizing an estimate as a
+	// fallback. Router-internal; never serialized upstream.
+	IncludeUsage bool `json:"-"`
+
 	// Reasoning controls extended thinking / reasoning effort where supported.
 	Reasoning *ReasoningConfig `json:"reasoning,omitempty"`
 

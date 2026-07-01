@@ -476,7 +476,13 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		// whose arguments are not reassembled into one complete JSON object.
 		// The channel path runs the ToolArgSanitizer, which buffers and
 		// reassembles those fragments before rendering.
-		if len(attemptReq.Tools) == 0 && req.Metadata.SourceDialect == attempt.Conn.Dialect() {
+		//
+		// include_usage also forces the channel path: the client asked for a
+		// guaranteed usage event, which pumpStream synthesizes when the provider
+		// omits one. Raw byte piping can't inject a synthetic event, so we trade
+		// the zero-copy throughput for correct usage accounting on these opt-in
+		// requests.
+		if len(attemptReq.Tools) == 0 && !req.IncludeUsage && req.Metadata.SourceDialect == attempt.Conn.Dialect() {
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
 				if rawErr != nil {
@@ -655,11 +661,31 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 	var streamBuf strings.Builder
 
 	var usage core.Usage
+	// sawUsage tracks whether the upstream ever emitted a usage event with real
+	// token counts. completionChars accumulates the assistant's streamed output
+	// (text + reasoning) length so we can synthesize a usage estimate when the
+	// client requested include_usage but the provider reported nothing.
+	var sawUsage bool
+	var completionChars int
 	for {
 		select {
 		case chunk, ok := <-in:
 			if !ok {
 				// Upstream closed — stream complete.
+				// If the client opted into a usage event (stream_options.
+				// include_usage) but the provider never sent one, synthesize an
+				// estimate so the client still receives a final usage event.
+				// Mirrors 9router's estimateUsage/addBufferToUsage behavior.
+				if req.IncludeUsage && !sawUsage {
+					est := estimateStreamUsage(req, completionChars)
+					if est.TotalTokens > 0 {
+						select {
+						case out <- core.StreamChunk{Type: core.ChunkUsage, Usage: &est}:
+						case <-stallCtx.Done():
+						}
+						usage = est
+					}
+				}
 				// Record actual total upstream duration as latency; TTFT is
 				// stored separately in ttft_ms by recordWithTTFT.
 				totalLatency := time.Since(started)
@@ -668,8 +694,16 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 				return
 			}
 			resetStall()
-			if chunk.Type == core.ChunkUsage && chunk.Usage != nil {
-				usage = mergeUsage(usage, *chunk.Usage)
+			switch chunk.Type {
+			case core.ChunkUsage:
+				if chunk.Usage != nil {
+					usage = mergeUsage(usage, *chunk.Usage)
+					if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 || chunk.Usage.TotalTokens > 0 {
+						sawUsage = true
+					}
+				}
+			case core.ChunkText, core.ChunkThinking:
+				completionChars += len(chunk.Delta)
 			}
 
 			// Outbound guardrail scan for streamed text. We accumulate every
@@ -734,6 +768,21 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 			p.budgetConfirm(scope, cost)
 			return
 		}
+	}
+}
+
+// estimateStreamUsage synthesizes a usage snapshot for a streaming response
+// when the upstream provider reported no token counts. Prompt tokens are
+// estimated from the request; completion tokens from the streamed output
+// length. Both use the ~4 chars/token heuristic. Used only as a fallback so
+// include_usage clients always receive a usage event.
+func estimateStreamUsage(req *core.ChatRequest, completionChars int) core.Usage {
+	prompt := core.EstimatePromptTokens(req)
+	completion := core.EstimateTokensFromChars(completionChars)
+	return core.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
 	}
 }
 

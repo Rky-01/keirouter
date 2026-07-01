@@ -108,28 +108,7 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 // the ~4 chars/token heuristic over system text, message content, tool-call
 // arguments, and tool results.
 func estimateInputTokens(req *core.ChatRequest) int {
-	if req == nil {
-		return 0
-	}
-	chars := len(req.System)
-	for _, m := range req.Messages {
-		for _, part := range m.Content {
-			chars += len(part.Text)
-			if part.ToolCall != nil {
-				chars += len(part.ToolCall.Arguments)
-			}
-			if part.ToolResult != nil {
-				chars += len(part.ToolResult.Content)
-			}
-		}
-	}
-	for _, t := range req.Tools {
-		chars += len(t.Name) + len(t.Description) + len(t.Parameters)
-	}
-	if chars <= 0 {
-		return 0
-	}
-	return (chars + 3) / 4
+	return core.EstimatePromptTokens(req)
 }
 
 // handleOpenAIResponses serves /v1/responses in the OpenAI Responses dialect

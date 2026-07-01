@@ -16,6 +16,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/identity"
@@ -225,4 +226,138 @@ func TestE2E_StreamingChat(t *testing.T) {
 	require.Contains(t, out, `"content":"par"`)
 	require.Contains(t, out, `"content":"tial"`)
 	require.Contains(t, out, "[DONE]")
+}
+
+// streamNoUsageUpstream streams content + a finish chunk but NEVER reports
+// usage — the common case for many OpenAI-compatible providers that reject
+// stream_options.include_usage. Used to prove the pipeline synthesizes a usage
+// event for clients that opted in.
+func streamNoUsageUpstream() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush, _ := w.(http.Flusher)
+		for _, l := range []string{
+			`data: {"choices":[{"delta":{"role":"assistant","content":"par"}}]}`,
+			`data: {"choices":[{"delta":{"content":"tial"}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+		} {
+			fmt.Fprintf(w, "%s\n\n", l)
+			if flush != nil {
+				flush.Flush()
+			}
+		}
+	}
+}
+
+// lastStreamUsage scans an OpenAI SSE body and returns the last usage block
+// found across all chunks (nil if none carried usage).
+func lastStreamUsage(t *testing.T, sse string) *core.Usage {
+	t.Helper()
+	var found *core.Usage
+	for _, line := range strings.Split(sse, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Usage *core.Usage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		if chunk.Usage != nil {
+			u := *chunk.Usage
+			found = &u
+		}
+	}
+	return found
+}
+
+// TestE2E_StreamingChat_IncludeUsageInjected proves the improvement: when the
+// client opts in via stream_options.include_usage and the provider never
+// reports usage, the gateway synthesizes and delivers a usage event.
+func TestE2E_StreamingChat_IncludeUsageInjected(t *testing.T) {
+	h := newE2E(t, streamNoUsageUpstream())
+
+	body := `{"model":"openai/gpt-4o","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`
+	resp := h.post(t, "/v1/chat/completions", body, h.apiKey)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(raw)
+
+	// Content still streamed through.
+	require.Contains(t, out, `"content":"par"`)
+	require.Contains(t, out, "[DONE]")
+
+	// A usage event was synthesized and delivered to the client.
+	usage := lastStreamUsage(t, out)
+	require.NotNil(t, usage, "expected an injected usage event, got none")
+	require.Greater(t, usage.CompletionTokens, 0, "completion tokens should be estimated from streamed output")
+	require.Greater(t, usage.TotalTokens, 0, "total tokens should be non-zero")
+}
+
+// TestE2E_StreamingChat_NoUsageWithoutOptIn is the regression guard: without
+// stream_options.include_usage, a provider that omits usage must NOT get a
+// synthesized usage event (respect the OpenAI contract + preserve prior
+// behavior).
+func TestE2E_StreamingChat_NoUsageWithoutOptIn(t *testing.T) {
+	h := newE2E(t, streamNoUsageUpstream())
+
+	body := `{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	resp := h.post(t, "/v1/chat/completions", body, h.apiKey)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	out := string(raw)
+
+	require.Contains(t, out, `"content":"par"`)
+	require.Contains(t, out, "[DONE]")
+	require.Nil(t, lastStreamUsage(t, out), "no usage event should be injected without include_usage")
+}
+
+// TestE2E_StreamingChat_ProviderUsageNotDoubled verifies that when the provider
+// DOES report usage, we pass it through and do not overwrite it with an
+// estimate (sawUsage short-circuits injection).
+func TestE2E_StreamingChat_ProviderUsageNotDoubled(t *testing.T) {
+	streamWithUsage := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush, _ := w.(http.Flusher)
+		for _, l := range []string{
+			`data: {"choices":[{"delta":{"role":"assistant","content":"hi"}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+			`data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}}`,
+			`data: [DONE]`,
+		} {
+			fmt.Fprintf(w, "%s\n\n", l)
+			if flush != nil {
+				flush.Flush()
+			}
+		}
+	}
+	h := newE2E(t, streamWithUsage)
+
+	body := `{"model":"openai/gpt-4o","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`
+	resp := h.post(t, "/v1/chat/completions", body, h.apiKey)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	usage := lastStreamUsage(t, string(raw))
+	require.NotNil(t, usage)
+	// The real provider numbers survive — not replaced by the ~4 char/token estimate.
+	require.Equal(t, 11, usage.PromptTokens)
+	require.Equal(t, 22, usage.CompletionTokens)
+	require.Equal(t, 33, usage.TotalTokens)
 }
