@@ -117,7 +117,36 @@ func TestStripUnsupportedModalitiesPreservesToolCalls(t *testing.T) {
 	}
 }
 
+func TestStripUnsupportedModalitiesCurrentVsPreviousPlaceholder(t *testing.T) {
+	// First message (history) image → neutral "previous" placeholder.
+	// Last message (current turn) image → explanatory placeholder.
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartImage, Media: &core.MediaPayload{MIMEType: "image/png", Data: "old"}},
+			}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "ok"},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartImage, Media: &core.MediaPayload{MIMEType: "image/png", Data: "new"}},
+			}},
+		},
+	}
+	stripped := StripUnsupportedModalities(req, "custom-openai-test", "glm-5.2")
+	if !stripped {
+		t.Fatal("should strip both images")
+	}
+	if req.Messages[0].Content[0].Text != placeholderImagePrev {
+		t.Errorf("history image should use previous placeholder, got %q", req.Messages[0].Content[0].Text)
+	}
+	if req.Messages[2].Content[0].Text != placeholderImageCurrent {
+		t.Errorf("current image should use current placeholder, got %q", req.Messages[2].Content[0].Text)
+	}
+}
+
 func TestStripUnsupportedModalitiesMultipleMessages(t *testing.T) {
+
 	req := &core.ChatRequest{
 		Messages: []core.Message{
 			{Role: core.RoleUser, Content: []core.ContentPart{

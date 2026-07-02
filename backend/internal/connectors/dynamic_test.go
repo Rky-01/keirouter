@@ -13,7 +13,8 @@ func TestIsCustomProviderID(t *testing.T) {
 		{"custom-anthropic-", true},
 		{"openai", false},
 		{"anthropic", false},
-		{"custom-openai", false}, // missing trailing dash
+		{"custom-openai", true},  // built-in generic gateway
+		{"custom-anthropic", true}, // built-in generic gateway
 		{"", false},
 		{"glm", false},
 		{"codebuddy-cn", false},

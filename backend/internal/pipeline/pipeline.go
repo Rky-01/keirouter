@@ -22,7 +22,6 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/caveman"
-	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/guardrails"
@@ -231,7 +230,11 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	}
 	save := buildSaveState(slimStats, hrStats, opts)
 
-	required := capability.Required(req)
+	// HardRequired returns only non-strippable capabilities (tool calling,
+	// streaming). Strippable modalities (vision, audio) are handled by the
+	// pipeline's modality stripping, not the dispatch guard, so a request with
+	// images is never hard-rejected just because a model profile lacks vision.
+	required := capability.HardRequired(req)
 	attempts, err := p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 	if err != nil {
 		p.log.Debug("dispatcher plan failed", "err", err)
@@ -247,16 +250,16 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
 		attemptReq := cloneForAttempt(req, attempt.Target.Model)
 
-		// Soft-degrade unsupported modalities for custom/dynamic providers.
-		// Built-in providers are already guarded by the dispatcher's capability
-		// check; custom providers have unknown upstream capabilities and may
-		// not support vision or audio. Stripping replaces those parts with text
-		// placeholders so the upstream receives a valid request it can process.
-		if connectors.IsCustomProviderID(attempt.Target.Provider) {
-			if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
-				p.log.Debug("stripped unsupported modalities for custom provider",
-					"provider", attempt.Target.Provider, "model", attempt.Target.Model)
-			}
+		// Soft-degrade unsupported modalities. Stripping replaces input
+		// modalities the resolved profile cannot handle with text placeholders,
+		// so the upstream receives a valid request it can process. For built-in
+		// providers this is normally a no-op (the dispatch guard already verifies
+		// capabilities), but it provides a safety net when a profile is incomplete.
+		// For custom/dynamic providers (where the guard is relaxed), stripping
+		// is the primary downgrade mechanism.
+		if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
+			p.log.Debug("stripped unsupported modalities",
+				"provider", attempt.Target.Provider, "model", attempt.Target.Model)
 		}
 
 		// Inject proxy config from credentials into context so the connector's
@@ -390,7 +393,10 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 	slimStats, hrStats := p.applyTokenSaving(ctx, req, opts)
 	save := buildSaveState(slimStats, hrStats, opts)
 
-	required := capability.Required(req)
+	// HardRequired: only non-strippable capabilities are enforced by the
+	// dispatch guard. Strippable modalities (vision, audio) are soft-degraded
+	// by modality stripping in the attempt loop below.
+	required := capability.HardRequired(req)
 	scope := budget.Scope{TenantID: req.Metadata.TenantID, ProjectID: req.Metadata.ProjectID, APIKeyID: req.Metadata.APIKeyID}
 	attempts, err := p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 	if err != nil {
@@ -464,16 +470,16 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		p.log.Debug("stream attempt start", "i", i, "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
 
-		// Soft-degrade unsupported modalities for custom/dynamic providers.
-		// Built-in providers are already guarded by the dispatcher's capability
-		// check; custom providers have unknown upstream capabilities and may
-		// not support vision or audio. Stripping replaces those parts with text
-		// placeholders so the upstream receives a valid request it can process.
-		if connectors.IsCustomProviderID(attempt.Target.Provider) {
-			if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
-				p.log.Debug("stripped unsupported modalities for custom provider",
-					"provider", attempt.Target.Provider, "model", attempt.Target.Model)
-			}
+		// Soft-degrade unsupported modalities. Stripping replaces input
+		// modalities the resolved profile cannot handle with text placeholders,
+		// so the upstream receives a valid request it can process. For built-in
+		// providers this is normally a no-op (the dispatch guard already verifies
+		// capabilities), but it provides a safety net when a profile is incomplete.
+		// For custom/dynamic providers (where the guard is relaxed), stripping
+		// is the primary downgrade mechanism.
+		if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
+			p.log.Debug("stripped unsupported modalities",
+				"provider", attempt.Target.Provider, "model", attempt.Target.Model)
 		}
 
 		// Capture TTFT from the connector's first-chunk callback.

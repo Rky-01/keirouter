@@ -127,3 +127,33 @@ func Required(req *core.ChatRequest) core.CapabilitySet {
 	}
 	return set
 }
+
+// strippableCaps are capabilities whose content can be soft-degraded by
+// StripUnsupportedModalities (replaced with text placeholders). The dispatch
+// guard does not enforce these because the pipeline handles them gracefully.
+var strippableCaps = map[core.Capability]struct{}{
+	core.CapVision:     {},
+	core.CapAudioInput: {},
+}
+
+// HardRequired returns only the non-strippable subset of Required —
+// capabilities the pipeline cannot soft-degrade. The dispatcher enforces these
+// as a hard guard; strippable modalities (vision, audio) are left to the
+// pipeline's modality stripping, so a request with images is never hard-rejected
+// just because a model profile lacks vision.
+func HardRequired(req *core.ChatRequest) core.CapabilitySet {
+	return NonStrippable(Required(req))
+}
+
+// NonStrippable returns the subset of a capability set that cannot be
+// soft-degraded by modality stripping. The dispatch guard enforces only these;
+// strippable modalities (vision, audio) are handled by the pipeline.
+func NonStrippable(required core.CapabilitySet) core.CapabilitySet {
+	hard := core.NewCapabilitySet()
+	for c := range required {
+		if _, strippable := strippableCaps[c]; !strippable {
+			hard.Add(c)
+		}
+	}
+	return hard
+}

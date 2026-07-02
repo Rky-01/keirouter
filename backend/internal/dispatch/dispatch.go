@@ -220,11 +220,15 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 
 	for _, target := range ordered {
 		// Capability guard: never fall back to a model that cannot honor the
-		// request. This prevents silent quality downgrades.
-		// User-defined (custom) providers have unknown upstream capabilities,
-		// so the guard is relaxed for them — unsupported modalities are
-		// stripped downstream by the pipeline instead of blocking the request.
-		if !connectors.IsCustomProviderID(target.Provider) && !capability.SupportsProvider(target.Provider, target.Model, required) {
+		// request's hard (non-strippable) requirements. This prevents silent
+		// quality downgrades for features the pipeline cannot fake (e.g. tool
+		// calling). Strippable input modalities (vision, audio) are not enforced
+		// here — the pipeline soft-degrades them via modality stripping so a
+		// request with images is never hard-rejected just because a profile
+		// lacks vision. User-defined (custom) providers skip the guard entirely
+		// since their upstream capabilities are unknown.
+		hardRequired := capability.NonStrippable(required)
+		if !connectors.IsCustomProviderID(target.Provider) && !capability.SupportsProvider(target.Provider, target.Model, hardRequired) {
 			lastReason = fmt.Sprintf("model %q lacks required capabilities", target.Model)
 			continue
 		}

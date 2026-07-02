@@ -202,6 +202,21 @@ func TestPlanWith_TargetRoundRobinRotatesComboTargets(t *testing.T) {
 	require.Equal(t, []string{"gpt-4o", "gpt-5", "gpt-4o"}, got)
 }
 
+func TestPlanWith_CustomOpenAISkipsCapabilityGuard(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccountWithProvider("acc-custom", "custom-openai", 10))
+
+	// The built-in "custom-openai" generic gateway has unknown upstream
+	// capabilities, so the guard must be relaxed for it too.
+	required := core.NewCapabilitySet(core.CapVision)
+	targets := []Target{{Provider: "custom-openai", Model: "glm-5.2"}}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, required, PlanOptions{})
+	require.NoError(t, err)
+	require.NotEmpty(t, attempts)
+	require.Equal(t, "custom-openai", attempts[0].Target.Provider)
+}
+
 func TestPlanWith_CustomProviderSkipsCapabilityGuard(t *testing.T) {
 	ctx := context.Background()
 	d, _ := newDispatchTest(t, testAccountWithProvider("acc-custom", "custom-openai-bandel", 10))
@@ -220,19 +235,34 @@ func TestPlanWith_CustomProviderSkipsCapabilityGuard(t *testing.T) {
 	require.Equal(t, "glm-5.2", attempts[0].Target.Model)
 }
 
-func TestPlanWith_BuiltInProviderEnforcesCapabilityGuard(t *testing.T) {
+func TestPlanWith_BuiltInProviderEnforcesHardCapabilityGuard(t *testing.T) {
 	ctx := context.Background()
-	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+	d, _ := newDispatchTest(t, testAccountWithProvider("acc-2", "openai", 10))
 
-	// glm-5.2 on a built-in provider resolves to a profile without vision.
-	// A vision-required request must be rejected by the guard.
-	required := core.NewCapabilitySet(core.CapVision)
-	targets := []Target{{Provider: "openai", Model: "glm-5.2"}}
+	// gpt-image-1 resolves to a profile with NoTools. A tool-calling
+	// requirement is non-strippable (hard), so the guard must reject it.
+	required := core.NewCapabilitySet(core.CapToolCalling)
+	targets := []Target{{Provider: "openai", Model: "gpt-image-1"}}
 
 	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, required, PlanOptions{})
 	require.Error(t, err)
 	require.Empty(t, attempts)
 	require.Contains(t, err.Error(), "lacks required capabilities")
+}
+
+func TestPlanWith_BuiltInProviderVisionStrippableSkipsGuard(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccountWithProvider("acc-3", "openai", 10))
+
+	// glm-5.2 resolves to a profile without vision. Vision is strippable
+	// (soft-degraded by the pipeline), so the dispatch guard must NOT reject
+	// it — the pipeline will strip images instead.
+	required := core.NewCapabilitySet(core.CapVision)
+	targets := []Target{{Provider: "openai", Model: "glm-5.2"}}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, required, PlanOptions{})
+	require.NoError(t, err)
+	require.NotEmpty(t, attempts)
 }
 
 func testAccountWithProvider(id, provider string, priority int) store.Account {
