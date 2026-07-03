@@ -1,0 +1,45 @@
+{
+  "name": "@keirouter/opencode-plugin",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for KeiRouter model discovery.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "keywords": [
+    "keirouter",
+    "opencode",
+    "opencode-plugin",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.15.6",
+    "@types/node": "^22.19.19",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.3",
+    "typescript": "^5.9.3"
+  }
+}
