@@ -33,6 +33,8 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantOf(key)
 
 	data := make([]modelEntry, 0, 64)
+	seen := make(map[string]struct{}, 64)
+	usableProviders := s.usableModelProviders(r.Context(), tenantID)
 
 	// Chains are exposed as "combo" models, matching the upstream convention:
 	// a combo chains multiple providers with auto-fallback and is callable by
@@ -41,21 +43,26 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	chains, err := s.chains.ListByTenant(r.Context(), tenantID)
 	if err == nil {
 		for _, c := range chains {
-			data = append(data, modelEntry{
+			data = appendModelEntry(data, seen, modelEntry{
 				ID: c.Name, Object: "model", OwnedBy: "combo", Kind: string(core.ServiceLLM), Name: c.Name,
 			})
 		}
 	}
 
-	// Static catalog models.
+	// Static catalog models for providers the tenant has connected. Without this
+	// gate, discovery advertises provider/model ids that the dispatcher will later
+	// reject with "no accounts configured".
 	for _, pm := range connectors.ModelsByKind(core.ServiceLLM) {
-		data = append(data, modelEntry{
-			ID:      pm.Provider + "/" + pm.Model.ID,
-			Object:  "model",
-			OwnedBy: pm.Provider,
+		if !usableProviders[pm.Provider] {
+			continue
+		}
+		data = appendModelEntry(data, seen, modelEntry{
+			ID:       pm.Provider + "/" + pm.Model.ID,
+			Object:   "model",
+			OwnedBy:  pm.Provider,
 			Provider: pm.Provider,
-			Kind:    string(core.ServiceLLM),
-			Name:    pm.Model.Name,
+			Kind:     string(core.ServiceLLM),
+			Name:     pm.Model.Name,
 		})
 	}
 
@@ -64,14 +71,17 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	// replace, the static catalog).
 	liveModels := s.fetchLiveModels(r.Context(), tenantID)
 	for provider, models := range liveModels {
+		if !usableProviders[provider] {
+			continue
+		}
 		for _, lm := range models {
-			data = append(data, modelEntry{
-				ID:      provider + "/" + lm.ID,
-				Object:  "model",
-				OwnedBy: provider,
+			data = appendModelEntry(data, seen, modelEntry{
+				ID:       provider + "/" + lm.ID,
+				Object:   "model",
+				OwnedBy:  provider,
 				Provider: provider,
-				Kind:    string(lm.Kind),
-				Name:    lm.Name,
+				Kind:     string(lm.Kind),
+				Name:     lm.Name,
 			})
 		}
 	}
@@ -99,8 +109,14 @@ func (s *Server) handleListModelsByKind(w http.ResponseWriter, r *http.Request) 
 
 	pairs := connectors.ModelsByKind(kind)
 	data := make([]modelEntry, 0, len(pairs))
+	seen := make(map[string]struct{}, len(pairs))
+	key, _ := authedKey(r.Context())
+	usableProviders := s.usableModelProviders(r.Context(), tenantOf(key))
 	for _, pm := range pairs {
-		data = append(data, modelEntry{
+		if !usableProviders[pm.Provider] {
+			continue
+		}
+		data = appendModelEntry(data, seen, modelEntry{
 			ID:         pm.Provider + "/" + pm.Model.ID,
 			Object:     "model",
 			OwnedBy:    pm.Provider,
@@ -136,7 +152,7 @@ func (s *Server) fetchLiveModels(ctx context.Context, tenantID string) map[strin
 		// Use the first non-disabled account.
 		var acc store.Account
 		for _, a := range accs {
-			if !a.Disabled {
+			if !a.Disabled && !a.NeedsReconnect {
 				acc = a
 				break
 			}
@@ -159,6 +175,35 @@ func (s *Server) fetchLiveModels(ctx context.Context, tenantID string) map[strin
 	return result
 }
 
+func (s *Server) usableModelProviders(ctx context.Context, tenantID string) map[string]bool {
+	usable := map[string]bool{}
+	if s.accounts == nil {
+		return usable
+	}
+	accs, err := s.accounts.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return usable
+	}
+	for _, acc := range accs {
+		if acc.Provider == "" || acc.Disabled || acc.NeedsReconnect {
+			continue
+		}
+		usable[acc.Provider] = true
+	}
+	return usable
+}
+
+func appendModelEntry(data []modelEntry, seen map[string]struct{}, entry modelEntry) []modelEntry {
+	if entry.ID == "" {
+		return data
+	}
+	if _, ok := seen[entry.ID]; ok {
+		return data
+	}
+	seen[entry.ID] = struct{}{}
+	return append(data, entry)
+}
+
 // handleModelInfo serves GET /v1/models/info?id=<provider/model>: it returns
 // metadata for a single model (kind, dimensions, provider, name).
 func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
@@ -171,6 +216,11 @@ func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
 	provider, model, ok := strings.Cut(id, "/")
 	if !ok || provider == "" || model == "" {
 		writeError(w, http.StatusBadRequest, "id must be in provider/model form")
+		return
+	}
+	key, _ := authedKey(r.Context())
+	if !s.usableModelProviders(r.Context(), tenantOf(key))[provider] {
+		writeError(w, http.StatusNotFound, "unknown model: "+id)
 		return
 	}
 
