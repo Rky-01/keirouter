@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -112,9 +114,35 @@ func (c *CloudCode) Validate(ctx context.Context, creds core.Credentials) error 
 	return nil
 }
 
+var antigravityModelAlias = map[string]string{
+	"gemini-3.5-flash-low":    "gemini-3.5-flash-extra-low",
+	"gemini-3.5-flash-medium": "gemini-3.5-flash-low",
+	"gemini-3.5-flash-high":   "gemini-3-flash-agent",
+	"gemini-3-pro-preview":    "gemini-3.1-pro",
+}
+
+var antigravityModelFallbacks = map[string][]string{
+	"gemini-3.1-pro-high": {"gemini-3.1-pro-high", "gemini-pro-agent", "gemini-3-pro-high"},
+	"gemini-3.1-pro-low":  {"gemini-3.1-pro-low", "gemini-3-pro-low"},
+}
+
+func antigravityFallbackChain(model string) []string {
+	if chain, ok := antigravityModelFallbacks[model]; ok {
+		return chain
+	}
+	return []string{model}
+}
+
+func resolveAntigravityModel(model string) string {
+	if alias, ok := antigravityModelAlias[model]; ok {
+		return alias
+	}
+	return model
+}
+
 // wrapRequest renders the canonical request to the inner Gemini body, then wraps
 // it in the CloudCode envelope expected by the provider.
-func (c *CloudCode) wrapRequest(req *core.ChatRequest, creds core.Credentials) ([]byte, error) {
+func (c *CloudCode) wrapRequest(req *core.ChatRequest, creds core.Credentials, overrideModel string) ([]byte, error) {
 	inner, err := c.codec.RenderRequest(req)
 	if err != nil {
 		return nil, err
@@ -147,9 +175,13 @@ func (c *CloudCode) wrapRequest(req *core.ChatRequest, creds core.Credentials) (
 				"functionCallingConfig": map[string]any{"mode": "VALIDATED"},
 			}
 		}
+		effectiveModel := req.Model
+		if overrideModel != "" {
+			effectiveModel = overrideModel
+		}
 		envelope := map[string]any{
 			"project":     projectID,
-			"model":       req.Model,
+			"model":       resolveAntigravityModel(effectiveModel),
 			"userAgent":   "antigravity",
 			"requestType": "agent",
 			"requestId":   "agent-" + uuid.NewString(),
@@ -181,36 +213,68 @@ func unwrapCloudCodeResponse(body []byte) []byte {
 // Chat performs a non-streaming CloudCode call.
 func (c *CloudCode) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
 	req.Stream = false
-	body, err := c.wrapRequest(req, creds)
-	if err != nil {
-		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	chain := []string{""}
+	if c.variant == variantAntigravity {
+		chain = antigravityFallbackChain(req.Model)
 	}
 
-	respBody, err := doJSON(ctx, c.id, req.Model, c.url(creds, false), body, c.headers(creds, false))
-	if err != nil {
-		return nil, err
-	}
+	var lastErr error
+	for _, override := range chain {
+		body, err := c.wrapRequest(req, creds, override)
+		if err != nil {
+			return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+		}
 
-	inner := unwrapCloudCodeResponse(respBody)
-	resp, err := c.codec.ParseResponse(inner, req.Model)
-	if err != nil {
-		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+		respBody, err := doJSON(ctx, c.id, req.Model, c.url(creds, false), body, c.headers(creds, false))
+		if err != nil {
+			var pe *core.ProviderError
+			if len(chain) >1&& errors.As(err, &pe) && pe.Kind == core.ErrUpstream {
+				lastErr = err
+				continue
+			}
+			return nil, err
+		}
+
+		inner := unwrapCloudCodeResponse(respBody)
+		resp, err := c.codec.ParseResponse(inner, req.Model)
+		if err != nil {
+			return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+		}
+		return resp, nil
 	}
-	return resp, nil
+	return nil, lastErr
 }
 
 // Stream performs a streaming CloudCode call, unwrapping {response: ...} from
 // each SSE chunk before handing the inner Gemini chunk to the codec.
 func (c *CloudCode) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
 	req.Stream = true
-	body, err := c.wrapRequest(req, creds)
-	if err != nil {
-		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	chain := []string{""}
+	if c.variant == variantAntigravity {
+		chain = antigravityFallbackChain(req.Model)
 	}
 
-	resp, err := openStream(ctx, c.id, req.Model, c.url(creds, true), body, c.headers(creds, true))
-	if err != nil {
-		return nil, err
+	var lastErr error
+	var resp *http.Response
+	for _, override := range chain {
+		body, err := c.wrapRequest(req, creds, override)
+		if err != nil {
+			return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+		}
+
+		resp, err = openStream(ctx, c.id, req.Model, c.url(creds, true), body, c.headers(creds, true))
+		if err != nil {
+			var pe *core.ProviderError
+			if len(chain) >1 && errors.As(err, &pe) && pe.Kind == core.ErrUpstream {
+				lastErr = err
+				continue
+			}
+			return nil, err
+		}
+		break
+	}
+	if resp == nil {
+		return nil, lastErr
 	}
 
 	out := make(chan core.StreamChunk, 16)
