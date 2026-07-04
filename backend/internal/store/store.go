@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -119,8 +120,14 @@ func sqliteDSN(cfg config.DatabaseConfig, dataDir string) string {
 
 func sqliteDSNFromPath(path string) string {
 	if path == ":memory:" {
-		// Shared-cache in-memory keeps the schema visible across the pool.
-		return "file::memory:?cache=shared"
+		// Unique name + mode=memory + cache=shared: each Open() call gets
+		// its own isolated in-memory database, while connections within
+		// the same pool still share it. Without a unique name every
+		// :memory: caller would share the same database, causing
+		// cross-test UNIQUE-constraint violations.
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		return fmt.Sprintf("file:mem_%x?mode=memory&cache=shared", b)
 	}
 	// WAL + busy timeout improve concurrent read/write behavior.
 	return "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"

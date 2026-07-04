@@ -92,7 +92,13 @@ func DefaultRegistry() *Registry {
 			// Register live model discovery: fetches GET /models from the
 			// upstream so providers without a static catalog (e.g. opencode,
 			// sumopod) auto-discover their models at runtime.
-			RegisterLiveModelSource(p.ID, &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL})
+			if p.ID == "cloudflare-ai" {
+				// Cloudflare uses a non-standard response envelope, so it gets
+				// a dedicated model source that parses both formats.
+				RegisterLiveModelSource(p.ID, &CloudflareModelSource{defaultBase: p.BaseURL})
+			} else {
+				RegisterLiveModelSource(p.ID, &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL})
+			}
 		case p.Dialect == core.DialectGemini:
 			conns = append(conns, NewGemini(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOllama:

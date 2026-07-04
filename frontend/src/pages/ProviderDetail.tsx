@@ -1339,9 +1339,36 @@ function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: 
                 </Field>
               )}
               {isCloudflare && (
-                <Field label="Cloudflare account ID">
-                  <Input value={accountID} onChange={(e) => setAccountID(e.target.value)} placeholder="abc123def456..." required />
-                </Field>
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-3 space-y-2">
+                    <p className="text-xs font-medium text-[var(--text-muted)]">Cloudflare Workers AI setup</p>
+                    <ol className="space-y-1 text-[11px] text-[var(--text-muted)]">
+                      <li className="flex gap-1.5">
+                        <span className="font-medium text-[var(--text)]">1.</span>
+                        <span>
+                          Create an API token at{" "}
+                          <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
+                            dash.cloudflare.com
+                          </a>{" "}
+                          — use the <code className="rounded bg-[var(--bg-subtle)] px-1 py-0.5 text-[10px]">Workers AI</code> template
+                        </span>
+                      </li>
+                      <li className="flex gap-1.5">
+                        <span className="font-medium text-[var(--text)]">2.</span>
+                        <span>
+                          Copy your Account ID from the{" "}
+                          <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
+                            Cloudflare dashboard
+                          </a>{" "}
+                          right sidebar
+                        </span>
+                      </li>
+                    </ol>
+                  </div>
+                  <Field label="Account ID">
+                    <Input value={accountID} onChange={(e) => setAccountID(e.target.value)} placeholder="e.g. a1b2c3d4e5f6..." required />
+                  </Field>
+                </div>
               )}
               {showBaseURL && (
                 <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
@@ -1609,20 +1636,47 @@ function AddApiKeyModal({
                 type="password"
                 value={apiKey}
                 onChange={(e) => { onApiKey(e.target.value); setCheckStatus("idle"); }}
-                placeholder={provider.id === "xai" ? "xai-..." : "sk-..."}
+                placeholder={isCloudflare ? "CF API token (v1.0-...)" : provider.id === "xai" ? "xai-..." : "sk-..."}
                 required={!apiKeyOptional}
               />
             </Field>
           )}
           {isCloudflare && (
-            <Field label="Cloudflare account ID">
-              <Input
-                value={accountID}
-                onChange={(e) => { onAccountID(e.target.value); setCheckStatus("idle"); }}
-                placeholder="abc123def456..."
-                required
-              />
-            </Field>
+            <div className="space-y-3">
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4 space-y-2">
+                <p className="text-xs font-medium text-[var(--text-muted)]">Cloudflare Workers AI setup</p>
+                <ol className="space-y-1.5 text-xs text-[var(--text-muted)]">
+                  <li className="flex gap-1.5">
+                    <span className="font-medium text-[var(--text)]">1.</span>
+                    <span>
+                      Create an API token at{" "}
+                      <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
+                        dash.cloudflare.com
+                      </a>{" "}
+                      — use the <code className="rounded bg-[var(--bg-elevated)] px-1 py-0.5 text-[10px]">Workers AI</code> template
+                    </span>
+                  </li>
+                  <li className="flex gap-1.5">
+                    <span className="font-medium text-[var(--text)]">2.</span>
+                    <span>
+                      Copy your Account ID from the{" "}
+                      <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="text-accent-600 hover:underline dark:text-accent-400">
+                        Cloudflare dashboard
+                      </a>{" "}
+                      right sidebar
+                    </span>
+                  </li>
+                </ol>
+              </div>
+              <Field label="Account ID">
+                <Input
+                  value={accountID}
+                  onChange={(e) => { onAccountID(e.target.value); setCheckStatus("idle"); }}
+                  placeholder="e.g. a1b2c3d4e5f6..."
+                  required
+                />
+              </Field>
+            </div>
           )}
           {isAzure ? (
             <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
