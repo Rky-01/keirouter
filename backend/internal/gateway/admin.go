@@ -170,7 +170,7 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 			"color":         p.Color,
 			"website":       p.Website,
 			"api_key_url":   p.APIKeyURL,
-			"icon":          "/providers/" + p.ID + ".png",
+			"icon":          "/providers/" + providerIconID(p.ID) + ".png",
 			"deprecated":    p.Deprecated,
 			"hidden":        p.Hidden,
 			"pinned":        p.Pinned,
@@ -200,6 +200,19 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
+}
+
+// providerIconID returns the provider ID used for the icon filename. Dynamic
+// (user-created) custom providers inherit the logo of their base type so they
+// show the OpenAI/Anthropic icon instead of a broken image or initials.
+func providerIconID(id string) string {
+	if strings.HasPrefix(id, connectors.CustomOpenAIPrefix) {
+		return "custom-openai"
+	}
+	if strings.HasPrefix(id, connectors.CustomAnthropicPrefix) {
+		return "custom-anthropic"
+	}
+	return id
 }
 
 // webProvider reports whether a provider is served by the web search/fetch

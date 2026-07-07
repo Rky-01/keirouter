@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Search, X, AlertTriangle, Plus } from "lucide-react";
+import { Boxes, Search, X, AlertTriangle, Plus, MessageSquare, Database, ImageIcon, Mic, Volume2, Globe, Link2 } from "lucide-react";
 import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot, Button, Modal, Field, Input, Select, ErrorBanner } from "../components/ui";
@@ -99,16 +99,16 @@ function sortByPopularity<T extends { id: string; pinned?: boolean }>(list: T[])
   });
 }
 
-// kindFilters are the service-kind tabs shown above the provider grid.
+// kindFilters are the service-kind filter chips shown above the provider grid.
 const kindFilters = [
-  { id: "all", label: "All" },
-  { id: "llm", label: "Chat" },
-  { id: "embedding", label: "Embeddings" },
-  { id: "image", label: "Image" },
-  { id: "stt", label: "Speech-to-Text" },
-  { id: "tts", label: "Text-to-Speech" },
-  { id: "search", label: "Web Search" },
-  { id: "fetch", label: "Web Fetch" },
+  { id: "all", label: "All", icon: Boxes },
+  { id: "llm", label: "Chat", icon: MessageSquare },
+  { id: "embedding", label: "Embeddings", icon: Database },
+  { id: "image", label: "Image", icon: ImageIcon },
+  { id: "stt", label: "STT", icon: Mic },
+  { id: "tts", label: "TTS", icon: Volume2 },
+  { id: "search", label: "Search", icon: Globe },
+  { id: "fetch", label: "Fetch", icon: Link2 },
 ];
 
 export function ProvidersPage() {
@@ -155,45 +155,58 @@ export function ProvidersPage() {
         description="Connect and manage AI providers to power your routing."
       />
 
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="flex flex-wrap gap-1.5">
-          {kindFilters.map((k) => (
-            <button
-              key={k.id}
-              onClick={() => setFilter(k.id)}
-              className={`rounded-xl px-3.5 py-2 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
-                filter === k.id
-                  ? "bg-accent-600 text-white shadow-sm"
-                  : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100 dark:hover:bg-ink-800"
-              }`}
-            >
-              {k.label}
-            </button>
-          ))}
+      {/* Unified toolbar: filters + search + action */}
+      <div className="mb-6 space-y-3">
+        {/* Row 1: Search + New custom provider */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search providers…"
+              className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] py-2.5 pl-10 pr-10 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus:ring-2 focus:ring-accent-400/40"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-[var(--text-muted)] hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <Button variant="primary" className="gap-2 shrink-0" onClick={() => setCustomOpen(true)}>
+            <Plus className="h-4 w-4" />
+            New custom provider
+          </Button>
         </div>
-        <div className="relative max-w-sm flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search providers…"
-            className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] py-2 pl-9 pr-9 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus:ring-2 focus:ring-accent-400/40"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text)]"
-              aria-label="Clear search"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
+
+        {/* Row 2: Filter chips */}
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Filter by service type">
+          {kindFilters.map((k) => {
+            const Icon = k.icon;
+            const active = filter === k.id;
+            return (
+              <button
+                key={k.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setFilter(k.id)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
+                  active
+                    ? "border-accent-300 bg-accent-50 text-accent-700 shadow-sm dark:border-accent-700 dark:bg-accent-900/30 dark:text-accent-300"
+                    : "border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)]"
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {k.label}
+              </button>
+            );
+          })}
         </div>
-        <Button variant="ghost" className="h-9 shrink-0 px-3 text-xs" onClick={() => setCustomOpen(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          New custom provider
-        </Button>
       </div>
 
 
