@@ -452,6 +452,40 @@ export interface UpstreamQuota {
   reset_at?: string;
 }
 
+export interface CodexCreditInfo {
+  status: string;
+  granted_at?: string;
+  expires_at?: string;
+}
+
+export interface CodexResetCredits {
+  available_count: number;
+  credits: CodexCreditInfo[];
+}
+
+export interface CodexConsumeResult {
+  ok: boolean;
+  no_credit: boolean;
+  status: number;
+  code?: string;
+  windows_reset?: number;
+  message?: string;
+}
+
+export interface CodexUsageData {
+  used: number;
+  limit: number;
+  remaining: number;
+  reset_at?: string;
+  unlimited: boolean;
+}
+
+export interface CodexUsageDetails {
+  usage_data?: CodexUsageData;
+  reset_credits?: CodexResetCredits;
+  error?: string;
+}
+
 export interface QuotaAccount {
   id: string;
   provider: string;
@@ -1110,6 +1144,12 @@ export const api = {
     request<{ provider: string; supported: boolean; plan_name?: string; message?: string; quotas?: UpstreamQuota[] }>(
       "GET", `/accounts/${id}/quota`,
     ),
+  codexResetCredits: (id: string) =>
+    request<CodexResetCredits>("GET", `/accounts/${id}/codex-reset-credits`),
+  codexConsumeCredit: (id: string, redeemRequestId: string) =>
+    request<CodexConsumeResult>("POST", `/accounts/${id}/codex-consume-credit`, { redeem_request_id: redeemRequestId }),
+  codexUsageDetails: (id: string) =>
+    request<CodexUsageDetails>("GET", `/accounts/${id}/codex-usage-details`),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
   createChain: (input: { name: string; strategy?: string; fallback_provider?: string; fallback_model?: string; steps: { provider: string; model: string }[] }) =>
