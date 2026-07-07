@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -131,9 +132,9 @@ func (s *Server) adminListCustomProviders(w http.ResponseWriter, r *http.Request
 
 func (s *Server) adminCreateCustomProvider(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		DisplayName string `json:"display_name"`
-		Dialect     string `json:"dialect"` // "openai" | "anthropic"
-		BaseURL     string `json:"base_url"`
+		DisplayName string  `json:"display_name"`
+		Dialect     string  `json:"dialect"` // "openai" | "anthropic"
+		BaseURL     string  `json:"base_url"`
 		Alias       *string `json:"alias"` // optional routing prefix; defaults to the generated id
 	}
 	if !decodeJSON(w, r, &body) {
@@ -256,16 +257,54 @@ func (s *Server) adminUpdateCustomProvider(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) adminDeleteCustomProvider(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	// The generic custom-compatible gateways ("custom-openai" /
+	// "custom-anthropic") are built-in catalog templates, not user-defined
+	// instances. They are never stored in custom_providers and must never be
+	// deleted -- only dynamic instances under the custom-openai-* /
+	// custom-anthropic-* namespaces can be.
+	if id == "custom-openai" || id == "custom-anthropic" {
+		writeError(w, http.StatusConflict, "cannot delete built-in custom provider: "+id)
+		return
+	}
+
 	if _, err := s.db.CustomProviders().GetProvider(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, "unknown custom provider: "+id)
 		return
 	}
 	if err := s.db.CustomProviders().DeleteProvider(r.Context(), id); err != nil {
+		// A concurrent delete may have removed the row between the GetProvider
+		// probe and now; surface it as 404 rather than a 500.
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "unknown custom provider: "+id)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "delete custom provider failed"))
 		return
 	}
+
+	// Disable any accounts still bound to the deleted provider so stale
+	// credentials are not selected for routing and the dashboard reflects the
+	// severed connection. Best-effort: the provider row is already gone, so a
+	// failure here is logged but must not undo the delete.
+	var accountsDisabled int64
+	if s.accounts != nil {
+		n, derr := s.accounts.DisableByProvider(r.Context(), adminTenant, id)
+		if derr != nil {
+			s.log.Warn("disable accounts after provider delete failed", "provider", id, "err", derr)
+		} else {
+			accountsDisabled = n
+		}
+	}
+
+	// Drop the in-memory dynamic provider + its models so routing/discovery
+	// stop exposing it immediately.
 	connectors.UnregisterDynamicProvider(id)
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                id,
+		"deleted":           true,
+		"accounts_disabled": accountsDisabled,
+	})
 }
 
 // ---- custom models ----------------------------------------------------------

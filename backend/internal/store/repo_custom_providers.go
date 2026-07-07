@@ -120,8 +120,14 @@ func (r *CustomProviderRepo) DeleteProvider(ctx context.Context, id string) erro
 	if _, err := tx.ExecContext(ctx, r.db.rebind(`DELETE FROM custom_models WHERE provider_id = ?`), id); err != nil {
 		return fmt.Errorf("store: delete custom provider models: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, r.db.rebind(`DELETE FROM custom_providers WHERE id = ?`), id); err != nil {
+	res, err := tx.ExecContext(ctx, r.db.rebind(`DELETE FROM custom_providers WHERE id = ?`), id)
+	if err != nil {
 		return fmt.Errorf("store: delete custom provider: %w", err)
+	}
+	// Explicit not-found signal so callers can map it to a404 without a
+	// separate existence probe (which would race with concurrent deletes).
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
 	return tx.Commit()
 }
@@ -181,7 +187,7 @@ func (r *CustomProviderRepo) ListManualModelsByProvider(ctx context.Context, pro
 	}
 	defer rows.Close()
 
-	var out[]CustomModel
+	var out []CustomModel
 	for rows.Next() {
 		m, err := scanCustomModel(rows)
 		if err != nil {

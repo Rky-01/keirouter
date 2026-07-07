@@ -147,6 +147,22 @@ func (r *AccountRepo) ClearProviderCooldowns(ctx context.Context, tenantID, prov
 }
 
 // Delete removes an account.
+// DisableByProvider marks every account bound to the given provider as
+// disabled and clears any active cooldown. It is used when a custom provider
+// is deleted so leftover credentials cannot be selected for routing and the
+// dashboard reflects the severed connection. Returns the number of accounts
+// touched. Already-disabled accounts are included so the count reflects total
+// rows matched, but only previously-enabled ones change state.
+func (r *AccountRepo) DisableByProvider(ctx context.Context, tenantID, provider string) (int64, error) {
+	q := r.db.rebind(`UPDATE accounts SET disabled = 1, cooldown_until = NULL WHERE tenant_id = ? AND provider = ?`)
+	res, err := r.db.sql.ExecContext(ctx, q, tenantID, provider)
+	if err != nil {
+		return 0, fmt.Errorf("store: disable accounts by provider: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (r *AccountRepo) Delete(ctx context.Context, id string) error {
 	q := r.db.rebind(`DELETE FROM accounts WHERE id = ?`)
 	_, err := r.db.sql.ExecContext(ctx, q, id)

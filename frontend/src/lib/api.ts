@@ -1029,7 +1029,7 @@ export const api = {
   updateCustomProvider: (id: string, patch: { display_name?: string; alias?: string; base_url?: string }) =>
     request<CustomProvider>("PATCH", `/custom-providers/${id}`, patch),
   deleteCustomProvider: (id: string) =>
-    request<{ id: string; deleted: boolean }>("DELETE", `/custom-providers/${id}`),
+    request<{ id: string; deleted: boolean; accounts_disabled?: number }>("DELETE", `/custom-providers/${id}`),
 
   importModels: (id: string) =>
     request<{ provider_id: string; imported: number; skipped: number; total: number }>(

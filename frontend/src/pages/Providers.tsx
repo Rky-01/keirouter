@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Search, X, AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { Boxes, Search, X, AlertTriangle, Plus } from "lucide-react";
 import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot, Button, Modal, Field, Input, Select, ErrorBanner } from "../components/ui";
@@ -112,32 +112,12 @@ const kindFilters = [
 ];
 
 export function ProvidersPage() {
-  const qc = useQueryClient();
-  const toast = useToast();
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
 
-  const removeProvider = useMutation({
-    mutationFn: (id: string) => api.deleteCustomProvider(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers"] });
-      qc.invalidateQueries({ queryKey: ["accounts"] });
-      toast.success("Provider deleted", "The custom provider has been removed.");
-    },
-    onError: (e: Error) => toast.error("Failed to delete provider", e.message),
-  });
-
-  const onDeleteProvider = (p: Provider) => {
-    if (confirm(`Delete custom provider "${p.display_name}"?\n\nIts accounts and custom models will no longer be routable.`)) {
-      removeProvider.mutate(p.id);
-    }
-  };
-
-
-  // Count accounts per provider id so we can split connected vs available.
   const accountsByProvider = useMemo(() => {
     const map = new Map<string, Account[]>();
     for (const a of accounts.data?.accounts ?? []) {
@@ -386,30 +366,17 @@ function CreateCustomProviderModal({ open, onClose }: { open: boolean; onClose: 
 }
 
 function ProviderCard({ provider: p, accountCount }: { provider: Provider; accountCount: number }) {
-  const qc = useQueryClient();
   const navigate = useNavigate();
-  const toast = useToast();
   const connected = accountCount > 0;
 
-  const remove = useMutation({
-    mutationFn: () => api.deleteCustomProvider(p.id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers"] });
-      qc.invalidateQueries({ queryKey: ["accounts"] });
-      toast.success("Provider deleted", `"${p.display_name}" has been removed.`);
-    },
-    onError: (e: Error) => toast.error("Failed to delete provider", e.message),
-  });
-
   return (
-    <div className="group relative flex h-full flex-col items-start gap-3 bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50 focus-within:ring-2 focus-within:ring-inset focus-within:ring-accent-400/60 dark:hover:bg-ink-800/40">
-      <button
-        type="button"
-        onClick={() => navigate(`/providers/${p.id}`)}
-        className="absolute inset-0 h-full w-full cursor-pointer focus:outline-none"
-        aria-label={`Open ${p.display_name}`}
-      />
-      <div className="relative flex w-full items-start justify-between gap-2">
+    <button
+      type="button"
+      onClick={() => navigate(`/providers/${p.id}`)}
+      aria-label={`Open ${p.display_name}`}
+      className="group relative flex h-full w-full flex-col items-start gap-3 rounded-none bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60 dark:hover:bg-ink-800/40"
+    >
+      <div className="flex w-full items-start justify-between gap-2">
         <ProviderIcon provider={p} />
         {connected ? (
           <span className="inline-flex items-center gap-1.5 rounded-md bg-accent-100 px-2 py-0.5 text-xs font-medium text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
@@ -428,35 +395,17 @@ function ProviderCard({ provider: p, accountCount }: { provider: Provider; accou
         ) : null}
       </div>
 
-      {p.custom ? (
-        <button
-          type="button"
-          disabled={remove.isPending}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (confirm(`Delete custom provider "${p.display_name}"?\n\nIts accounts and custom models will no longer be routable.`)) {
-              remove.mutate();
-            }
-          }}
-          className="absolute right-2 top-2 z-10 rounded-md p-1.5 text-[var(--text-muted)] opacity-0 transition-opacity hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)] focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
-          title="Delete custom provider"
-          aria-label={`Delete custom provider ${p.display_name}`}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      ) : null}
-
-      <div className="relative min-w-0">
+      <div className="min-w-0">
         <p className="truncate text-sm font-semibold">{p.display_name}</p>
         <p className="mt-0.5 truncate font-mono text-xs text-[var(--text-muted)]">{p.id}</p>
       </div>
 
-      <p className="relative mt-auto text-xs text-[var(--text-muted)]">
+      <p className="mt-auto text-xs text-[var(--text-muted)]">
         {connected
           ? `${accountCount} ${accountCount === 1 ? "account" : "accounts"}`
           : "Connect"}
       </p>
-    </div>
+    </button>
   );
 }
 

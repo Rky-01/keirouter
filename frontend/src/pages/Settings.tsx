@@ -19,14 +19,15 @@ import {
 } from "../components/ui";
 
 // ── Tab definitions ─────────────────────────────────────────────────
-type SettingsTab = "saving" | "routing" | "network" | "branding" | "system";
+type SettingsTab = "saving" | "routing" | "network" | "branding" | "import-export" | "system";
 
 const settingsTabs = [
   { value: "saving" as const, label: "Token Saving", icon: Zap },
   { value: "routing" as const, label: "Routing", icon: Route },
   { value: "network" as const, label: "Network", icon: Gauge },
   { value: "branding" as const, label: "Branding", icon: Palette },
-  { value: "system" as const, label: "System", icon: Database },
+  { value: "import-export" as const, label: "Import / Export", icon: Database },
+  { value: "system" as const, label: "System", icon: ArrowUpCircle },
 ];
 
 function useHashTab(defaultTab: SettingsTab): [SettingsTab, (t: SettingsTab) => void] {
@@ -152,6 +153,7 @@ export function SettingsPage() {
             {tab === "routing" && <RoutingTab local={local} update={update} />}
             {tab === "network" && <NetworkTab local={local} update={update} />}
             {tab === "branding" && <BrandingTab />}
+            {tab === "import-export" && <ImportExportTab />}
             {tab === "system" && <SystemTab />}
           </div>
 
@@ -1138,12 +1140,20 @@ function BrandingTab() {
   );
 }
 
-// ── System Tab ──────────────────────────────────────────────────────
-function SystemTab() {
+// ── Import / Export Tab ─────────────────────────────────────────────
+function ImportExportTab() {
   return (
     <div className="space-y-4">
       <ForeignImportSettings />
       <DatabaseSettings />
+    </div>
+  );
+}
+
+// ── System Tab ──────────────────────────────────────────────────────
+function SystemTab() {
+  return (
+    <div className="space-y-4">
       <UpdatesSettings />
     </div>
   );

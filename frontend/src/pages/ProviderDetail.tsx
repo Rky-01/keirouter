@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type QuotaAccount } from "../lib/api";
@@ -49,6 +49,7 @@ function redirectURIForProvider(provider: OAuthProvider): string {
 
 export function ProviderDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
 
@@ -121,6 +122,7 @@ export function ProviderDetailPage() {
   const [commandcodeOpen, setCommandcodeOpen] = useState(false);
   const [addKeyOpen, setAddKeyOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [deleteProviderOpen, setDeleteProviderOpen] = useState(false);
 
   // Model search and pagination
   const [modelSearchQuery, setModelSearchQuery] = useState("");
@@ -321,6 +323,20 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Bulk removal failed", e.message),
   });
 
+  const deleteProviderMut = useMutation({
+    mutationFn: () => api.deleteCustomProvider(id!),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      const detail = data?.accounts_disabled
+        ? `${provider?.display_name} has been removed. ${data.accounts_disabled} bound account(s) disabled.`
+        : `${provider?.display_name} has been removed.`;
+      toast.success("Provider deleted", detail);
+      navigate("/providers");
+    },
+    onError: (e: Error) => toast.error("Failed to delete provider", e.message),
+  });
+
   // Sort accounts by priority for display.
   const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
   const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
@@ -442,10 +458,25 @@ export function ProviderDetailPage() {
       <header className="mb-7 flex items-start gap-4">
         <ProviderIcon provider={provider} size={56} />
         <div className="min-w-0 flex-1">
-          <h1 className="font-display text-3xl font-semibold tracking-tight">{provider.display_name}</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">
-            {myAccounts.length} connected {myAccounts.length === 1 ? "account" : "accounts"}
-          </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="font-display text-3xl font-semibold tracking-tight">{provider.display_name}</h1>
+              <p className="mt-1 text-sm text-[var(--text-muted)]">
+                {myAccounts.length} connected {myAccounts.length === 1 ? "account" : "accounts"}
+              </p>
+            </div>
+            {provider.custom && (
+              <Button
+                variant="ghost"
+                className="h-8 shrink-0 px-3 text-xs text-[color:var(--color-danger)] hover:bg-[color:var(--color-danger)]/10"
+                onClick={() => setDeleteProviderOpen(true)}
+                title="Delete this custom provider"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete provider
+              </Button>
+            )}
+          </div>
           <div className="mt-2 flex flex-wrap gap-1">
             {(provider.service_kinds ?? []).map((k) => (
               <Badge key={k} tone="accent">
@@ -887,6 +918,46 @@ export function ProviderDetailPage() {
                 <Trash2 className="h-3.5 w-3.5" />
               )}
               Delete {selectedList.length} account{selectedList.length > 1 ? "s" : ""}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Delete custom provider confirmation */}
+      <Modal
+        open={deleteProviderOpen}
+        onClose={() => { if (!deleteProviderMut.isPending) setDeleteProviderOpen(false); }}
+        title={`Delete ${provider.display_name}?`}
+        subtitle="This removes the custom provider, its custom models, and disables all bound accounts."
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-4 px-6 py-5">
+          <div className="flex items-start gap-3 rounded-xl border border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/10 px-3.5 py-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--color-danger)]" strokeWidth={2} />
+            <div className="text-sm leading-snug text-[color:var(--color-danger)]">
+              Its accounts and custom models will no longer be routable.
+              <span className="font-semibold"> This action cannot be undone.</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setDeleteProviderOpen(false)}
+              disabled={deleteProviderMut.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => deleteProviderMut.mutate()}
+              disabled={deleteProviderMut.isPending}
+            >
+              {deleteProviderMut.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              Delete provider
             </Button>
           </div>
         </div>
