@@ -1298,9 +1298,10 @@ func codexAccountID(extra map[string]string) string {
 
 // codexCreditInfo represents a single reset credit with status and expiry.
 type codexCreditInfo struct {
-	Status    string `json:"status"`
-	GrantedAt string `json:"granted_at,omitempty"`
-	ExpiresAt string `json:"expires_at,omitempty"`
+	RedeemRequestID string `json:"redeem_request_id,omitempty"`
+	Status          string `json:"status"`
+	GrantedAt       string `json:"granted_at,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
 }
 
 // codexUsageDetails represents Codex usage information including rate limits and reset credits.
@@ -1518,11 +1519,13 @@ func fetchCodexResetCredits(ctx context.Context, accessToken string, extra map[s
 		AvailableCount *int `json:"available_count"`
 		AvailableCount2 *int `json:"availableCount"`
 		Credits []struct {
-			Status     string `json:"status"`
-			GrantedAt  any    `json:"granted_at"`
-			GrantedAt2 any    `json:"grantedAt"`
-			ExpiresAt  any    `json:"expires_at"`
-			ExpiresAt2 any    `json:"expiresAt"`
+			RedeemRequestID  string `json:"redeem_request_id"`
+			RedeemRequestID2 string `json:"redeemRequestId"`
+			Status           string `json:"status"`
+			GrantedAt        any    `json:"granted_at"`
+			GrantedAt2       any    `json:"grantedAt"`
+			ExpiresAt        any    `json:"expires_at"`
+			ExpiresAt2       any    `json:"expiresAt"`
 		} `json:"credits"`
 		Message string `json:"message"`
 		Error   string `json:"error"`
@@ -1568,7 +1571,11 @@ func fetchCodexResetCredits(ctx context.Context, accessToken string, extra map[s
 	credits := make([]codexCreditInfo, 0, len(data.Credits))
 	for _, c := range data.Credits {
 		info := codexCreditInfo{
-			Status: defaultStr(c.Status, "unknown"),
+			RedeemRequestID: c.RedeemRequestID,
+			Status:          defaultStr(c.Status, "unknown"),
+		}
+		if info.RedeemRequestID == "" && c.RedeemRequestID2 != "" {
+			info.RedeemRequestID = c.RedeemRequestID2
 		}
 		if t, ok := c.GrantedAt.(string); ok && t != "" {
 			info.GrantedAt = t

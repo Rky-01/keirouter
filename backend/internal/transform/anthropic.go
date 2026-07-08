@@ -316,6 +316,9 @@ func renderAntBlocks(m core.Message) []antBlock {
 	for _, p := range m.Content {
 		switch p.Type {
 		case core.PartText:
+			if p.Text == "" {
+				continue
+			}
 			blocks = append(blocks, antBlock{Type: "text", Text: p.Text})
 		case core.PartThinking:
 			blocks = append(blocks, antBlock{Type: "thinking", Text: p.Text})
@@ -351,7 +354,7 @@ func renderAntBlocks(m core.Message) []antBlock {
 		}
 	}
 	if len(blocks) == 0 {
-		blocks = append(blocks, antBlock{Type: "text", Text: ""})
+		blocks = append(blocks, antBlock{Type: "text", Text: " "})
 	}
 	return blocks
 }

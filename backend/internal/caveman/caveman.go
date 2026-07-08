@@ -52,9 +52,6 @@ type Config struct {
 }
 
 // idempotencyProbe is a stable substring shared by every level's directive.
-// Apply uses it to detect whether the style guideline is already present in the
-// system prompt, making re-application a no-op across retries and fallbacks
-// without embedding any visible marker the model could surface.
 const idempotencyProbe = "Keep all technical substance exact"
 
 // sharedExamples shows the contrast between filler-heavy and terse replies.
@@ -62,8 +59,7 @@ const sharedExamples = "Not: \"Sure! I'd be happy to help you with that. " +
 	"The issue you're experiencing is likely caused by...\" " +
 	"Yes: \"Bug in auth middleware. Token expiry check use `<` not `<=`. Fix:\""
 
-// sharedExamplesExtra provides additional level-comparison examples used by
-// the full and ultra prompts to illustrate the expected compression style.
+// sharedExamplesExtra provides additional level-comparison examples.
 const sharedExamplesExtra = "Example — \"Why React component re-render?\" " +
 	"full: \"New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`.\" " +
 	"ultra: \"Inline obj prop → new ref → re-render. `useMemo`.\" " +
@@ -87,10 +83,34 @@ const sharedAutoClarity = "Auto-Clarity: drop caveman for security warnings, irr
 	"order unclear without articles/conjunctions), or when user repeats a question. " +
 	"Resume caveman after clear part done."
 
-// sharedPersistence keeps the directive active across a long conversation,
-// phrased as an ordinary style-consistency note rather than an insistent
-// override (which reads as injected content to agentic tools).
+// sharedPersistence keeps the directive active across a long conversation.
 const sharedPersistence = "Keep this style consistent throughout the conversation."
+
+// sharedNoInventedAbbrev prevents invented abbreviations the reader cannot
+// decode, while allowing well-known tech acronyms.
+const sharedNoInventedAbbrev = "No invented abbreviations. Standard well-known tech acronyms " +
+	"(DB/API/HTTP/URL/JSON/ID/OS/CPU) OK. Names of code symbols, function names, API names, " +
+	"error strings: keep verbatim."
+
+// sharedPreserveLanguage ensures the model replies in the user's dominant
+// language. Wenyan/classical-Chinese levels override this for Chinese context.
+const sharedPreserveLanguage = "Preserve the user's dominant language. " +
+	"User writes Vietnamese → reply Vietnamese. User writes English → reply English. " +
+	"Wenyan/classical-Chinese levels override this language-preservation rule. " +
+	"Code identifiers, error strings, file paths, commands: keep in their original form " +
+	"regardless of language."
+
+// sharedNoSelfReference prevents the model from naming or announcing the
+// style, which would read as injected content to agentic coding tools.
+const sharedNoSelfReference = "No self-reference. Do not name or announce the style " +
+	"(no \"caveman mode\", no \"me caveman think\", no \"compressed mode active\"). Just respond."
+
+// sharedNoDecoration bans decorative elements and tool-call narration that
+// waste output tokens without adding information.
+const sharedNoDecoration = "No decorative emoji. No narrating tool calls " +
+	"(\"I will now search\", \"I used X to find Y\"). No status phrases " +
+	"(\"Sure!\", \"Of course!\", \"I'd be happy to\"). No causal arrow shorthand " +
+	"(\"A -> B -> fails\"). State the thing, the action, the reason. Then next step."
 
 const promptLite = "Respond tersely. Keep all technical substance exact. Keep grammar and full sentences but drop filler, hedging and pleasantries " +
 	"(just/really/basically/sure/of course/I'd be happy to). " +
@@ -98,23 +118,28 @@ const promptLite = "Respond tersely. Keep all technical substance exact. Keep gr
 	sharedExamples + " " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
 const promptFull = "Respond in a terse, information-dense technical style. Keep all technical substance exact; only fluff goes. " +
 	"Drop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. " +
 	"Fragments OK. Short synonyms (big not extensive, fix not implement a solution for). " +
-	"No tool-call narration, no decorative tables/emoji, no dumping long raw error logs unless asked — quote shortest decisive line. " +
-	"Standard well-known tech acronyms OK (DB/API/HTTP); never invent new abbreviations reader can't decode. " +
 	"Technical terms exact. Code blocks unchanged. Errors quoted exact. " +
 	"Pattern: [thing] [action] [reason]. [next step]. " +
 	sharedExamples + " " +
 	sharedExamplesExtra + " " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
 const promptUltra = "Respond ultra-terse. Maximum compression. Telegraphic. Keep all technical substance exact. " +
-	"Abbreviate prose words (DB/auth/config/req/res/fn/impl) — prose words only, never real code symbols/function names. " +
 	"Strip conjunctions, use arrows for causality (X → Y), one word when one word enough. " +
 	"Code symbols, function names, API names, error strings: never abbreviate. " +
 	"Pattern: [thing] → [result]. [fix]. " +
@@ -122,7 +147,11 @@ const promptUltra = "Respond ultra-terse. Maximum compression. Telegraphic. Keep
 	sharedExamplesExtra + " " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
 // promptWenyanLite uses semi-classical style: drop filler/hedging but keep
 // grammar structure and classical register.
@@ -132,11 +161,15 @@ const promptWenyanLite = "Respond in semi-classical style. Keep all technical su
 	"Pattern: [subject] [verb] [object], classical particles allowed. " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
 // promptWenyanFull is maximum classical terseness (文言文), achieving 80-90%
-// character reduction with classical sentence patterns, verbs preceding objects,
-// subjects often omitted, and classical particles (之/乃/為/其).
+// character reduction with classical sentence patterns, verbs preceding
+// objects, subjects often omitted, and classical particles (之/乃/為/其).
 const promptWenyanFull = "Respond in full 文言文 (classical Chinese) style. Keep all technical substance exact. Maximum classical terseness. " +
 	"80-90% character reduction. Classical sentence patterns: verbs precede objects, subjects often omitted, " +
 	"classical particles (之/乃/為/其/矣/也/焉). No modern filler words. " +
@@ -144,17 +177,26 @@ const promptWenyanFull = "Respond in full 文言文 (classical Chinese) style. K
 	"Preserve user's dominant language for technical context. " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
-// promptWenyanUltra is extreme abbreviation while keeping classical Chinese feel.
-// Maximum compression combining ultra telegraphic style with wenyan brevity.
+// promptWenyanUltra is extreme abbreviation while keeping classical Chinese
+// feel. Maximum compression combining ultra telegraphic style with wenyan
+// brevity.
 const promptWenyanUltra = "Respond ultra-terse with classical Chinese feel. Keep all technical substance exact. Extreme abbreviation. " +
 	"Maximum compression. Classical particles minimal. One character when one character enough. " +
 	"Technical terms, code, API names: keep verbatim. Arrows for causality (→). " +
 	"Preserve user's dominant language for technical context. " +
 	sharedBoundaries + " " +
 	sharedAutoClarity + " " +
-	sharedPersistence
+	sharedPersistence + " " +
+	sharedNoInventedAbbrev + " " +
+	sharedPreserveLanguage + " " +
+	sharedNoSelfReference + " " +
+	sharedNoDecoration
 
 // promptFor returns the instruction text for a level, defaulting to full.
 func promptFor(l Level) string {
@@ -177,14 +219,9 @@ func promptFor(l Level) string {
 }
 
 // Apply weaves the terse output-style guideline into req.System when
-// cfg.Enabled.
-//
-// It is a no-op when disabled or when the guideline is already present
-// (detected from the directive text via idempotencyProbe), so it is safe across
-// retries and fallback attempts. The guideline is appended after any existing
-// system text so the operator's own instructions keep priority while the style
-// directive still takes effect. No marker comment is added, so coding tools see
-// it as a normal part of the system prompt rather than injected content.
+// cfg.Enabled. It is a no-op when disabled or when the guideline is already
+// present (detected via idempotencyProbe), so it is safe across retries and
+// fallback attempts.
 func Apply(req *core.ChatRequest, cfg Config) {
 	if req == nil || !cfg.Enabled {
 		return

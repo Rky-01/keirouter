@@ -216,6 +216,7 @@ export function KeysPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
+  const access = useQuery({ queryKey: ["access-settings"], queryFn: () => api.accessSettings() });
 
   const [modalOpen, setModalOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
@@ -469,6 +470,15 @@ export function KeysPage() {
             copied={copied}
             setCopied={setCopied}
             onClose={closeModal}
+            endpointUrl={access.data?.endpoint_url ?? window.location.origin}
+            planName={created.plan?.name ?? "Custom"}
+            availableModelsText={
+              created.allowed_models && created.allowed_models.length >0
+                ? created.allowed_models.join(", ")
+                : selectedPlanId !== "custom"
+                  ? (plans.data?.plans ?? []).find((p) => p.id === selectedPlanId)?.allowed_models?.join(", ") || "all models"
+                  : "all models"
+            }
           />
         )}
       </Modal>
@@ -944,14 +954,30 @@ function StepSuccess({
   copied,
   setCopied,
   onClose,
+  endpointUrl,
+  planName,
+  availableModelsText,
 }: {
   created: CreatedKey;
   copied: boolean;
   setCopied: (v: boolean) => void;
   onClose: () => void;
+  endpointUrl: string;
+  planName: string;
+  availableModelsText: string;
 }) {
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
   const portalUrl = `${window.location.origin}/portal?id=${created.id}`;
+
+  const shareText = [
+    "Keirouter",
+    `Endpoint : ${endpointUrl}`,
+    `API Key : ${created.key}`,
+    `Portal Monitoring : ${portalUrl}`,
+    `Plan : ${planName}`,
+    `Available model : ${availableModelsText}`,
+  ].join("\n");
 
   return (
     <div className="space-y-4 px-6 py-5">
@@ -1013,6 +1039,24 @@ function StepSuccess({
           <p className="mt-0.5 text-sm">{created.allowed_models.join(", ")}</p>
         </div>
       )}
+
+      <div className="rounded-xl border border-accent-400/40 bg-accent-500/5 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Ready to copy</p>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              navigator.clipboard.writeText(shareText);
+              setCopiedAll(true);
+              setTimeout(() => setCopiedAll(false),2000);
+            }}
+          >
+            {copiedAll ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            {copiedAll ? "Copied" : "Copy all"}
+          </Button>
+        </div>
+        <pre className="mt-2 overflow-x-auto rounded-lg bg-[var(--bg-elevated)] px-3 py-2.5 font-mono text-xs leading-relaxed text-[var(--text)] whitespace-pre-wrap">{shareText}</pre>
+      </div>
 
       <Button className="w-full" onClick={onClose}>
         Done

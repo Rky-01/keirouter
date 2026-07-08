@@ -434,6 +434,9 @@ func renderOAIRequestForProvider(req *core.ChatRequest, providerID string, scope
 	if providerID == "codebuddy" {
 		applyCodebuddyRequestFixes(out, req)
 	}
+	if providerID == "kimchi" {
+		stripReasoningContent(out)
+	}
 	return json.Marshal(out)
 }
 
@@ -652,6 +655,30 @@ func deepSeekToolCallIDs(msg oaiMessage) []string {
 		}
 	}
 	return ids
+}
+
+// reasoningPlaceholderMaxLen is the threshold below which reasoning_content is
+// treated as a placeholder and left intact. The injected placeholder is a single
+// space (" "); stripping it would re-trigger upstream complaints about missing
+// reasoning_content on the next turn. Real chain-of-thought blocks exceed this
+// length and are stripped to bound multi-turn input token growth.
+const reasoningPlaceholderMaxLen = 8
+
+// stripReasoningContent removes echoed reasoning_content from assistant messages
+// in the outgoing request. Clients replay the full reasoning block from prior
+// turns, which inflates input tokens on multi-turn conversations. Only real
+// reasoning (length > reasoningPlaceholderMaxLen) is stripped; the minimal
+// placeholder injected for upstream validation is preserved.
+func stripReasoningContent(out *oaiRequest) {
+	for i := range out.Messages {
+		msg := &out.Messages[i]
+		if msg.Role != string(core.RoleAssistant) {
+			continue
+		}
+		if len(msg.ReasoningContent) > reasoningPlaceholderMaxLen {
+			msg.ReasoningContent = ""
+		}
+	}
 }
 
 func hasDeepSeekToolResult(msg oaiMessage, id string) bool {

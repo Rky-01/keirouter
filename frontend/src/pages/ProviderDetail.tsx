@@ -2254,6 +2254,10 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
   };
 
   const consumeCredit = async (redeemRequestId: string) => {
+    if (!redeemRequestId) {
+      toast.error("Cannot consume credit", "Missing redeem request ID");
+      return;
+    }
     setConsuming(true);
     try {
       const result = await api.codexConsumeCredit(accountId, redeemRequestId);
@@ -2401,8 +2405,8 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
                       </div>
                       {credit.status === "available" && (
                         <button
-                          onClick={() => consumeCredit(`credit_${idx}`)}
-                          disabled={consuming}
+                          onClick={() => consumeCredit(credit.redeem_request_id || "")}
+                          disabled={consuming || !credit.redeem_request_id}
                           className="ml-2 rounded-md border border-[var(--border)] px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-accent-50 disabled:opacity-40 dark:text-accent-400 dark:hover:bg-accent-900/20"
                         >
                           {consuming ? "..." : "Use"}

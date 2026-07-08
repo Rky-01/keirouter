@@ -453,6 +453,7 @@ export interface UpstreamQuota {
 }
 
 export interface CodexCreditInfo {
+  redeem_request_id?: string;
   status: string;
   granted_at?: string;
   expires_at?: string;

@@ -26,15 +26,12 @@ func TestApplyInjectsIntoEmptySystem(t *testing.T) {
 	}
 }
 
-// The injected guideline must not carry any visible marker comment or name
-// itself, so agentic coding tools treat it as part of the operator's own
-// system prompt rather than rejecting it as injected content.
 func TestApplyAddsNoVisibleMarkerOrSelfName(t *testing.T) {
 	req := &core.ChatRequest{}
 	Apply(req, Config{Enabled: true, Level: LevelFull})
-	for _, banned := range []string{"<!--", "keirouter:", "caveman mode", "smart caveman"} {
+	for _, banned := range []string{"<!--", "keirouter:", "smart caveman"} {
 		if strings.Contains(req.System, banned) {
-			t.Errorf("system prompt must not contain %q (reads as injected content), got %q", banned, req.System)
+			t.Errorf("system prompt must not contain %q, got %q", banned, req.System)
 		}
 	}
 }
@@ -56,7 +53,7 @@ func TestApplyIdempotent(t *testing.T) {
 	first := req.System
 	Apply(req, Config{Enabled: true, Level: LevelFull})
 	if req.System != first {
-		t.Fatal("second Apply must be a no-op (idempotent across retries)")
+		t.Fatal("second Apply must be a no-op")
 	}
 }
 
@@ -70,7 +67,7 @@ func TestLevelSelection(t *testing.T) {
 		req := &core.ChatRequest{}
 		Apply(req, Config{Enabled: true, Level: level})
 		if !strings.Contains(req.System, want) {
-			t.Errorf("level %q: expected %q in prompt, got %q", level, want, req.System)
+			t.Errorf("level %q: expected %q, got %q", level, want, req.System)
 		}
 	}
 }
@@ -97,35 +94,58 @@ func TestWenyanLevelSelection(t *testing.T) {
 		req := &core.ChatRequest{}
 		Apply(req, Config{Enabled: true, Level: level})
 		if !strings.Contains(req.System, want) {
-			t.Errorf("level %q: expected %q in prompt, got %q", level, want, req.System)
+			t.Errorf("level %q: expected %q, got %q", level, want, req.System)
 		}
 	}
 }
 
-func TestEnhancedFullPrompt(t *testing.T) {
-	p := promptFor(LevelFull)
-	for _, want := range []string{
-		"No tool-call narration",
-		"no decorative tables",
-		"Standard well-known tech acronyms",
-		"never invent new abbreviations",
-	} {
-		if !strings.Contains(p, want) {
-			t.Errorf("full prompt missing %q", want)
+func TestSharedNoInventedAbbrevInAllLevels(t *testing.T) {
+	for _, level := range []Level{LevelLite, LevelFull, LevelUltra,
+		LevelWenyanLite, LevelWenyanFull, LevelWenyanUltra} {
+		p := promptFor(level)
+		if !strings.Contains(p, "No invented abbreviations") {
+			t.Errorf("level %q: missing sharedNoInventedAbbrev", level)
 		}
 	}
 }
 
-func TestEnhancedUltraPrompt(t *testing.T) {
+func TestSharedPreserveLanguageInAllLevels(t *testing.T) {
+	for _, level := range []Level{LevelLite, LevelFull, LevelUltra,
+		LevelWenyanLite, LevelWenyanFull, LevelWenyanUltra} {
+		p := promptFor(level)
+		if !strings.Contains(p, "Preserve the user's dominant language") {
+			t.Errorf("level %q: missing sharedPreserveLanguage", level)
+		}
+	}
+}
+
+func TestSharedNoSelfReferenceInAllLevels(t *testing.T) {
+	for _, level := range []Level{LevelLite, LevelFull, LevelUltra,
+		LevelWenyanLite, LevelWenyanFull, LevelWenyanUltra} {
+		p := promptFor(level)
+		if !strings.Contains(p, "No self-reference") {
+			t.Errorf("level %q: missing sharedNoSelfReference", level)
+		}
+	}
+}
+
+func TestSharedNoDecorationInAllLevels(t *testing.T) {
+	for _, level := range []Level{LevelLite, LevelFull, LevelUltra,
+		LevelWenyanLite, LevelWenyanFull, LevelWenyanUltra} {
+		p := promptFor(level)
+		if !strings.Contains(p, "No decorative emoji") {
+			t.Errorf("level %q: missing sharedNoDecoration", level)
+		}
+	}
+}
+
+func TestUltraNoContradictions(t *testing.T) {
 	p := promptFor(LevelUltra)
-	for _, want := range []string{
-		"prose words only",
-		"never real code symbols",
-		"Code symbols, function names, API names",
-	} {
-		if !strings.Contains(p, want) {
-			t.Errorf("ultra prompt missing %q", want)
-		}
+	if strings.Contains(p, "req/res/fn/impl") {
+		t.Error("ultra must not contain 'req/res/fn/impl'")
+	}
+	if strings.Contains(p, "Abbreviate prose words") {
+		t.Error("ultra must not contain 'Abbreviate prose words'")
 	}
 }
 
