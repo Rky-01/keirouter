@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -339,7 +340,11 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		fmt.Sprintf("Streaming from %s/%s", result.Provider, result.Model),
 		fmt.Sprintf("Provider: %s\nModel:    %s\nAccount:  %s", result.Provider, result.Model, result.AccountID))
 
-	w.Header().Set("Content-Type", "text/event-stream")
+	if req.Metadata.SourceDialect == core.DialectOllama {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+	} else {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-KeiRouter-Provider", result.Provider)
@@ -347,25 +352,33 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	// Zero-copy direct pipe path: the pipeline detected same-dialect, no-tools
-	// and obtained a raw io.ReadCloser from the upstream. Pipe it directly to
-	// the client via io.Copy — no JSON parse/serialize, no goroutines, minimal
-	// memory allocation. This is the fastest possible streaming path.
+	// Direct stream path: frame SSE events without decoding normal payloads. This
+	// preserves the low-overhead path while replacing late in-band provider
+	// errors before they can reach the client.
 	if result.DirectBody != nil {
 		defer result.DirectBody.Close()
-		n, cpErr := io.Copy(w, result.DirectBody)
+		n, cpErr := copySanitizedStream(w, result.DirectBody, req.Metadata.SourceDialect, flusher.Flush)
 		if cpErr != nil && !isClientDisconnect(cpErr) {
 			s.consoleLog.Log("ERROR", fmt.Sprintf("Stream interrupted after %s", humanBytes(int(n))), cpErr.Error())
-			s.log.Warn("direct pipe error", "bytes", n, "err", cpErr)
+			s.log.Warn("direct stream error", "bytes", n, "err", cpErr)
 		}
 		flusher.Flush()
-		// Record usage from the captured SSE stream. The pipeline wraps
-		// the direct body in a tee reader that captures all bytes; the
-		// DirectUsageFunc parses the captured data for usage tokens.
-		if result.DirectUsageFunc != nil {
-			result.DirectUsageFunc()
+		// Complete direct-stream accounting exactly once. Client disconnects do
+		// not indicate provider failure; late provider/stall errors do and must
+		// update cooldowns and health telemetry.
+		completionErr := cpErr
+		if isClientDisconnect(cpErr) {
+			_ = result.DirectBody.Close()
+			completionErr = context.Canceled
+		}
+		if result.DirectCompleteFunc != nil {
+			result.DirectCompleteFunc(completionErr)
 		}
 		latency := int(time.Since(start).Milliseconds())
+		if cpErr != nil {
+			s.logRequest(keyName, result.Provider, result.Model, 0, 0, latency, false, cpErr)
+			return
+		}
 		s.consoleLog.Log("DEBUG", fmt.Sprintf("Stream finished · %s · %s", humanBytes(int(n)), humanDuration(latency)), "")
 		s.logRequest(keyName, result.Provider, result.Model, 0, 0, latency, false, nil)
 		return
@@ -441,10 +454,18 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		flusher.Flush()
 	}
 
+	var streamErr error
 	for chunk := range result.Chunks {
 		if chunk.Type == core.ChunkError {
-			s.consoleLog.Log("ERROR", "Provider stream error", fmt.Sprintf("%v", chunk.Err))
-			s.log.Warn("stream error", "err", chunk.Err)
+			streamErr = chunk.Err
+			if streamErr == nil {
+				streamErr = &core.ProviderError{Kind: core.ErrUpstream, Message: "provider stream failed"}
+			}
+			s.consoleLog.Log("ERROR", "Provider stream error", fmt.Sprintf("%v", streamErr))
+			s.log.Warn("stream error", "err", streamErr)
+			_, _ = bw.Write(streamErrorEvent(req.Metadata.SourceDialect, sanitizeUpstreamError(streamErr)))
+			_ = bw.Flush()
+			flusher.Flush()
 			break
 		}
 		if chunk.Type == core.ChunkUsage && chunk.Usage != nil {
@@ -452,6 +473,12 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		}
 		chunkCount++
 		sanitizer.Process(chunk, renderChunk)
+	}
+
+	latency := int(time.Since(streamStart).Milliseconds())
+	if streamErr != nil {
+		s.logRequest(keyName, result.Provider, result.Model, totalTokens, 0, latency, false, streamErr)
+		return
 	}
 
 	// Flush any remaining buffered tool calls and think-tag buffer.
@@ -475,7 +502,6 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	bw.Flush()
 	flusher.Flush()
 
-	latency := int(time.Since(streamStart).Milliseconds())
 	s.consoleLog.Log("DEBUG",
 		fmt.Sprintf("Stream complete · %d chunks · %s tokens · %s", chunkCount, humanInt(totalTokens), humanDuration(latency)),
 		fmt.Sprintf("Provider: %s\nModel:    %s\nChunks:   %d\nTokens:   %s\nLatency:  %dms",
@@ -483,12 +509,224 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	s.logRequest(keyName, result.Provider, result.Model, totalTokens, 0, latency, false, nil)
 }
 
-// writeProviderError maps a structured provider error to an HTTP status.
+// providerStreamEventError keeps a late provider error available to internal
+// logs after its wire payload has been replaced with a generic client message.
+type providerStreamEventError struct{ detail string }
+
+func (e *providerStreamEventError) Error() string { return "provider stream error: " + e.detail }
+
+// copySanitizedStream keeps the direct-stream path lightweight by framing SSE
+// events without decoding successful chunks. Only potential error events are
+// decoded; those are replaced with a dialect-compatible generic event.
+func copySanitizedStream(dst io.Writer, src io.Reader, dialect core.Dialect, flush func()) (int64, error) {
+	reader := bufio.NewReaderSize(src, 64*1024)
+	if dialect == core.DialectOllama {
+		return copySanitizedNDJSON(dst, reader, dialect, flush)
+	}
+
+	var event bytes.Buffer
+	var written int64
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		if len(line) > 0 {
+			_, _ = event.Write(line)
+			if len(bytes.TrimRight(line, "\r\n")) == 0 {
+				n, err := writeSanitizedFrame(dst, event.Bytes(), dialect, flush)
+				written += n
+				if err != nil {
+					return written, err
+				}
+				event.Reset()
+			}
+		}
+		if readErr == nil || errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr != io.EOF {
+			return written, readErr
+		}
+		if event.Len() > 0 {
+			n, err := writeSanitizedFrame(dst, event.Bytes(), dialect, flush)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+		return written, nil
+	}
+}
+
+// copySanitizedNDJSON preserves Ollama's one-JSON-object-per-line framing.
+// ReadSlice avoids allocating for normal-sized lines; a buffer is used only
+// when an unusually large object spans the reader's bounded internal buffer.
+func copySanitizedNDJSON(dst io.Writer, reader *bufio.Reader, dialect core.Dialect, flush func()) (int64, error) {
+	var oversized bytes.Buffer
+	var written int64
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if oversized.Len() == 0 && !errors.Is(readErr, bufio.ErrBufferFull) {
+			if len(bytes.TrimSpace(fragment)) > 0 {
+				n, err := writeSanitizedFrame(dst, fragment, dialect, flush)
+				written += n
+				if err != nil {
+					return written, err
+				}
+			}
+		} else {
+			_, _ = oversized.Write(fragment)
+			if !errors.Is(readErr, bufio.ErrBufferFull) {
+				if len(bytes.TrimSpace(oversized.Bytes())) > 0 {
+					n, err := writeSanitizedFrame(dst, oversized.Bytes(), dialect, flush)
+					written += n
+					if err != nil {
+						return written, err
+					}
+				}
+				oversized.Reset()
+			}
+		}
+
+		if readErr == nil || errors.Is(readErr, bufio.ErrBufferFull) {
+			continue
+		}
+		if readErr == io.EOF {
+			return written, nil
+		}
+		return written, readErr
+	}
+}
+
+func writeSanitizedFrame(dst io.Writer, raw []byte, dialect core.Dialect, flush func()) (int64, error) {
+	providerErr := hasStreamErrorMarker(raw) && isProviderStreamError(string(raw))
+	out := raw
+	if providerErr {
+		out = streamErrorEvent(dialect, "upstream provider request failed")
+	}
+	n, err := dst.Write(out)
+	if err == nil && n != len(out) {
+		err = io.ErrShortWrite
+	}
+	if flush != nil {
+		flush()
+	}
+	if err != nil {
+		return int64(n), err
+	}
+	if providerErr {
+		detail := truncateStreamEvent(string(raw))
+		cause := &providerStreamEventError{detail: detail}
+		return int64(n), &core.ProviderError{
+			Kind: core.ErrUpstream, Message: cause.Error(), Cause: cause,
+		}
+	}
+	return int64(n), nil
+}
+
+func hasStreamErrorMarker(frame []byte) bool {
+	return bytes.Contains(frame, []byte("error")) || bytes.Contains(frame, []byte("Error")) ||
+		bytes.Contains(frame, []byte("ERROR")) || bytes.Contains(frame, []byte("failed")) ||
+		bytes.Contains(frame, []byte("Failed")) || bytes.Contains(frame, []byte("FAILED"))
+}
+
+func isProviderStreamError(event string) bool {
+	lowerEvent := strings.ToLower(event)
+	if !strings.Contains(lowerEvent, "error") && !strings.Contains(lowerEvent, "failed") {
+		return false
+	}
+
+	var data strings.Builder
+	for _, line := range strings.Split(event, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "event:")))
+			if strings.Contains(name, "error") || strings.Contains(name, "failed") {
+				return true
+			}
+		case strings.HasPrefix(line, "data:"):
+			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if payload != "" && payload != "[DONE]" {
+				if data.Len() > 0 {
+					data.WriteByte('\n')
+				}
+				data.WriteString(payload)
+			}
+		}
+	}
+	if data.Len() == 0 {
+		standalone := strings.TrimSpace(event)
+		if !strings.HasPrefix(standalone, "{") {
+			return false
+		}
+		data.WriteString(standalone)
+	}
+
+	var envelope struct {
+		Type   string          `json:"type"`
+		Status string          `json:"status"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data.String()), &envelope); err != nil {
+		return false
+	}
+	typeName := strings.ToLower(envelope.Type)
+	status := strings.ToLower(envelope.Status)
+	rawError := strings.TrimSpace(string(envelope.Error))
+	return strings.Contains(typeName, "error") || strings.Contains(typeName, "failed") ||
+		status == "failed" || (rawError != "" && rawError != "null")
+}
+
+func streamErrorEvent(dialect core.Dialect, message string) []byte {
+	if dialect == core.DialectOllama {
+		body, _ := json.Marshal(map[string]any{"error": message})
+		return append(body, '\n')
+	}
+
+	var payload map[string]any
+	if dialect == core.DialectGemini {
+		payload = map[string]any{"error": map[string]any{
+			"code": http.StatusBadGateway, "message": message, "status": "UNAVAILABLE",
+		}}
+	} else if dialect == core.DialectAnthropic {
+		payload = map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "api_error", "message": message},
+		}
+	} else {
+		payload = map[string]any{"error": map[string]any{
+			"message": message, "type": "upstream_error", "code": "upstream_error",
+		}}
+	}
+
+	body, _ := json.Marshal(payload)
+	if dialect == core.DialectAnthropic {
+		out := make([]byte, 0, len(body)+22)
+		out = append(out, "event: error\ndata: "...)
+		out = append(out, body...)
+		return append(out, '\n', '\n')
+	}
+	out := make([]byte, 0, len(body)+8)
+	out = append(out, "data: "...)
+	out = append(out, body...)
+	return append(out, '\n', '\n')
+}
+
+func truncateStreamEvent(event string) string {
+	const max = 1024
+	event = strings.TrimSpace(event)
+	if len(event) > max {
+		return event[:max] + "…"
+	}
+	return event
+}
+
+// writeProviderError maps a structured provider error to an HTTP status while
+// keeping the provider's original message in internal logs only.
 func (s *Server) writeProviderError(w http.ResponseWriter, err error) {
 	pe := core.AsProviderError(err)
 	status := http.StatusBadGateway
 	switch pe.Kind {
-	case core.ErrBadRequest:
+	case core.ErrBadRequest, core.ErrCapability:
 		status = http.StatusBadRequest
 	case core.ErrAuth:
 		status = http.StatusUnauthorized
@@ -499,12 +737,23 @@ func (s *Server) writeProviderError(w http.ResponseWriter, err error) {
 		}
 	case core.ErrQuotaExhausted, core.ErrBudgetBlocked:
 		status = http.StatusPaymentRequired
+	case core.ErrPolicyBlocked:
+		status = http.StatusForbidden
 	case core.ErrTimeout:
 		status = http.StatusGatewayTimeout
 	case core.ErrInternal:
 		status = http.StatusInternalServerError
 	}
-	writeError(w, status, pe.Message)
+
+	if s.log != nil {
+		s.log.Error("provider request failed",
+			"kind", pe.Kind,
+			"provider", pe.Provider,
+			"model", pe.Model,
+			"upstream_status", pe.StatusCode,
+			"error", err)
+	}
+	writeError(w, status, sanitizeUpstreamError(pe))
 }
 
 // isClientDisconnect reports whether an error is a client disconnection
@@ -514,11 +763,16 @@ func isClientDisconnect(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "broken pipe") ||
 		strings.Contains(s, "reset by peer") ||
 		strings.Contains(s, "connection reset") ||
-		strings.Contains(s, "use of closed network connection")
+		strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "client disconnected") ||
+		strings.Contains(s, "http2: stream closed")
 }
 
 // filterAllowedTargets filters resolved routing targets to only include models
@@ -831,8 +1085,8 @@ func (s *Server) handlePortalKeyUsage(w http.ResponseWriter, r *http.Request) {
 			"optimizations":     []string{},
 		}
 		var optNames []string
-		if rec.SlimActive || rec.SlimBytesSaved >0 {
-			if rec.SlimBytesSaved >0 {
+		if rec.SlimActive || rec.SlimBytesSaved > 0 {
+			if rec.SlimBytesSaved > 0 {
 				entry["slim_bytes_saved"] = rec.SlimBytesSaved
 				entry["slim_tokens_saved"] = rec.SlimTokensSaved
 			}

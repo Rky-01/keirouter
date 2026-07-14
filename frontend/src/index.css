@@ -195,9 +195,28 @@ body {
   scrollbar-color: var(--color-ink-300) transparent;
 }
 
-/* Clickable elements get pointer cursor. */
+/* Clickable elements get pointer cursor and a consistent tap target response. */
 a, button, select, summary, [role="button"], [role="switch"], [role="radio"], [role="tab"], [type="checkbox"], [type="radio"], [type="submit"] {
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled,
+select:disabled,
+[type="checkbox"]:disabled,
+[type="radio"]:disabled,
+[type="submit"]:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent-400) 30%, transparent);
+  color: var(--text);
+}
+
+/* Keep keyboard-focused controls visible when navigating dense dashboards. */
+:focus-visible {
+  scroll-margin: 5rem;
 }
 
 /* Visually hidden but accessible to screen readers. */

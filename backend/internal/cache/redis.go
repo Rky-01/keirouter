@@ -75,6 +75,21 @@ func (s *RedisStore) indexKey() string {
 
 // Nearest returns the entry whose vector has the highest cosine similarity to vec.
 func (s *RedisStore) Nearest(ctx context.Context, vec []float32) (Entry, float64, bool, error) {
+	// Identical prompts produce an identical vector key. This O(1) path handles
+	// the default hash embedder and repeated semantic prompts without loading
+	// the entire cache index and every stored response over the network.
+	exactData, err := s.client.HGetAll(ctx, entryKey(s.keyPrefix, vec)).Result()
+	if err != nil && err != redis.Nil {
+		return Entry{}, 0, false, fmt.Errorf("cache: redis exact lookup: %w", err)
+	}
+	if len(exactData) > 0 {
+		exact, decodeErr := decodeRedisEntry(exactData)
+		if decodeErr == nil {
+			return exact, 1, true, nil
+		}
+		s.log.Warn("cache: invalid exact entry", "err", decodeErr)
+	}
+
 	members, err := s.client.SMembers(ctx, s.indexKey()).Result()
 	if err != nil {
 		return Entry{}, 0, false, fmt.Errorf("cache: redis smembers: %w", err)
@@ -152,6 +167,22 @@ func (s *RedisStore) Nearest(ctx context.Context, vec []float32) (Entry, float64
 		return Entry{}, 0, false, nil
 	}
 	return best, bestScore, true, nil
+}
+
+func decodeRedisEntry(data map[string]string) (Entry, error) {
+	var vec []float32
+	if err := json.Unmarshal([]byte(data["vector"]), &vec); err != nil {
+		return Entry{}, fmt.Errorf("decode vector: %w", err)
+	}
+	var resp core.ChatResponse
+	if err := json.Unmarshal([]byte(data["response"]), &resp); err != nil {
+		return Entry{}, fmt.Errorf("decode response: %w", err)
+	}
+	storedAt, err := time.Parse(time.RFC3339, data["stored_at"])
+	if err != nil {
+		return Entry{}, fmt.Errorf("decode stored_at: %w", err)
+	}
+	return Entry{Vector: vec, Response: &resp, Model: data["model"], StoredAt: storedAt}, nil
 }
 
 // Put inserts a cache entry into Redis with the configured TTL.

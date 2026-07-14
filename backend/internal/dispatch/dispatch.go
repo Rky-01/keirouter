@@ -214,47 +214,89 @@ func (d *Dispatcher) Plan(ctx context.Context, tenantID string, targets []Target
 func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Target, required core.CapabilitySet, opts PlanOptions) ([]Attempt, error) {
 	// Apply round-robin rotation if requested.
 	ordered := d.applyRotation(ctx, targets, opts)
+	hardRequired := capability.NonStrippable(required)
+
+	// Resolve all provider accounts in one store query. A chain commonly has
+	// multiple models backed by the same provider, and querying/decrypting per
+	// target made planning cost grow with targets × accounts.
+	eligible := make([]bool, len(ordered))
+	providers := make([]string, 0, len(ordered))
+	seenProviders := make(map[string]struct{}, len(ordered))
+	for i, target := range ordered {
+		eligible[i] = connectors.IsCustomProviderID(target.Provider) ||
+			capability.SupportsProvider(target.Provider, target.Model, hardRequired)
+		if !eligible[i] {
+			continue
+		}
+		if _, ok := seenProviders[target.Provider]; !ok {
+			seenProviders[target.Provider] = struct{}{}
+			providers = append(providers, target.Provider)
+		}
+	}
+
+	providerAccounts, err := d.accounts.ListByProviders(ctx, tenantID, providers)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch: list provider accounts: %w", err)
+	}
+	accountsByProvider := make(map[string][]store.Account, len(providers))
+	accountIDsByProvider := make(map[string][]string, len(providers))
+	for _, acc := range providerAccounts {
+		accountsByProvider[acc.Provider] = append(accountsByProvider[acc.Provider], acc)
+		accountIDsByProvider[acc.Provider] = append(accountIDsByProvider[acc.Provider], acc.ID)
+	}
+
+	// Connector resolution, OAuth refresh, vault decryption, and proxy-pool
+	// selection are invariant for an account during one plan. Keep them only
+	// for this request so credentials are never cached across requests.
+	type connectorResolution struct {
+		conn core.Connector
+		err  error
+	}
+	type preparedAccount struct {
+		account store.Account
+		creds   core.Credentials
+		err     error
+	}
+	connections := make(map[string]connectorResolution, len(providers))
+	preparedAccounts := make(map[string]preparedAccount, len(providerAccounts))
+
+	var globalProxyURL, globalNoProxy string
+	if d.proxyReader != nil {
+		globalProxyURL = d.proxyReader.ProxyURL()
+		globalNoProxy = d.proxyReader.NoProxy()
+	}
 
 	now := time.Now()
-	var attempts []Attempt
-	var unhealthyAttempts []Attempt
+	attempts := make([]Attempt, 0, len(ordered))
+	unhealthyAttempts := make([]Attempt, 0, len(ordered))
 	var lastReason string
 
-	for _, target := range ordered {
+	for i, target := range ordered {
 		// Capability guard: never fall back to a model that cannot honor the
-		// request's hard (non-strippable) requirements. This prevents silent
-		// quality downgrades for features the pipeline cannot fake (e.g. tool
-		// calling). Strippable input modalities (vision, audio) are not enforced
-		// here — the pipeline soft-degrades them via modality stripping so a
-		// request with images is never hard-rejected just because a profile
-		// lacks vision. User-defined (custom) providers skip the guard entirely
-		// since their upstream capabilities are unknown.
-		hardRequired := capability.NonStrippable(required)
-		if !connectors.IsCustomProviderID(target.Provider) && !capability.SupportsProvider(target.Provider, target.Model, hardRequired) {
+		// request's hard (non-strippable) requirements. Custom providers skip
+		// the guard because their upstream capabilities are unknown.
+		if !eligible[i] {
 			lastReason = fmt.Sprintf("model %q lacks required capabilities", target.Model)
 			continue
 		}
 
-		conn, err := d.conns.Get(target.Provider)
-		if err != nil {
-			lastReason = err.Error()
+		resolved, ok := connections[target.Provider]
+		if !ok {
+			resolved.conn, resolved.err = d.conns.Get(target.Provider)
+			connections[target.Provider] = resolved
+		}
+		if resolved.err != nil {
+			lastReason = resolved.err.Error()
 			continue
 		}
 
-		accs, err := d.accounts.ListByProvider(ctx, tenantID, target.Provider)
-		if err != nil {
-			return nil, fmt.Errorf("dispatch: list accounts for %s: %w", target.Provider, err)
-		}
+		accs := accountsByProvider[target.Provider]
 		if len(accs) == 0 {
 			lastReason = fmt.Sprintf("no accounts configured for provider %q", target.Provider)
 			continue
 		}
 		accs = d.applyAccountRouting(ctx, tenantID, target, accs, opts.accountRoutingForTarget(target.Provider))
-
-		accountIDs := make([]string, 0, len(accs))
-		for _, acc := range accs {
-			accountIDs = append(accountIDs, acc.ID)
-		}
+		accountIDs := accountIDsByProvider[target.Provider]
 
 		var cooldownSet map[string]bool
 		if d.routing != nil && len(accountIDs) > 0 {
@@ -272,61 +314,46 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 				continue
 			}
 			// Skip accounts whose OAuth refresh token was permanently rejected;
-			// they need the user to re-authenticate before they can serve traffic.
-
+			// they need the user to re-authenticate before serving traffic.
 			if acc.NeedsReconnect {
 				lastReason = fmt.Sprintf("account %s needs reconnection (refresh token revoked)", acc.ID)
 				continue
 			}
 			// Model-level cooldown: skip this account only for this model.
-
 			if cooldownSet != nil && cooldownSet[acc.ID] {
 				lastReason = fmt.Sprintf("account %s model %s on cooldown", acc.ID, target.Model)
 				continue
 			}
-			// Background health checker: deprioritize known-unhealthy accounts
-			// rather than hard-skipping them. They are held back as fallback
-			// candidates so that when no healthy account is available the
-			// request still reaches the provider — and a successful response
-			// lets NoteSuccess recover the health row.
 
 			isUnhealthy := unhealthySet != nil && unhealthySet[acc.ID]
-			// Refresh an expiring OAuth access token before use, so the
-			// connector always receives a live token. A refresh failure skips
-			// this account and falls back to the next.
-			if d.refresher != nil {
-				refreshed, rerr := d.refresher.EnsureFresh(ctx, acc)
-				if rerr != nil {
-					lastReason = rerr.Error()
-					continue
+			prepared, ok := preparedAccounts[acc.ID]
+			if !ok {
+				prepared.account = acc
+				if d.refresher != nil {
+					prepared.account, prepared.err = d.refresher.EnsureFresh(ctx, prepared.account)
 				}
-				acc = refreshed
+				if prepared.err == nil {
+					prepared.creds, prepared.err = d.vault.Open(prepared.account)
+				}
+				if prepared.err == nil && d.pools != nil && prepared.account.ProxyPoolID != "" {
+					prepared.err = proxy.ResolvePool(ctx, d.pools, prepared.account.ProxyPoolID, &prepared.creds)
+				}
+				if prepared.err == nil && prepared.creds.ProxyURL == "" && prepared.creds.RelayURL == "" && globalProxyURL != "" {
+					prepared.creds.ProxyURL = globalProxyURL
+					prepared.creds.NoProxy = globalNoProxy
+				}
+				preparedAccounts[acc.ID] = prepared
 			}
-			creds, err := d.vault.Open(acc)
-			if err != nil {
-				lastReason = err.Error()
+			if prepared.err != nil {
+				lastReason = prepared.err.Error()
 				continue
 			}
-			// Resolve proxy pool binding for this account.
-			if d.pools != nil && acc.ProxyPoolID != "" {
-				if perr := proxy.ResolvePool(ctx, d.pools, acc.ProxyPoolID, &creds); perr != nil {
-					lastReason = perr.Error()
-					continue
-				}
-			}
-			// Apply global outbound proxy as fallback when no per-account
-			// proxy pool binding was resolved.
-			if d.proxyReader != nil && creds.ProxyURL == "" && creds.RelayURL == "" {
-				if purl := d.proxyReader.ProxyURL(); purl != "" {
-					creds.ProxyURL = purl
-					creds.NoProxy = d.proxyReader.NoProxy()
-				}
-			}
+
 			attempt := Attempt{
 				Target:  target,
-				Conn:    conn,
-				Creds:   creds,
-				Account: acc,
+				Conn:    resolved.conn,
+				Creds:   prepared.creds,
+				Account: prepared.account,
 			}
 			if isUnhealthy {
 				unhealthyAttempts = append(unhealthyAttempts, attempt)

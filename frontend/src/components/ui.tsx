@@ -6,12 +6,12 @@ import type {
   InputHTMLAttributes,
   SelectHTMLAttributes,
 } from "react";
-import { AlertCircle, X, type LucideIcon } from "lucide-react";
+import { AlertCircle, Inbox, X, type LucideIcon } from "lucide-react";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={`rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-sm ring-1 ring-inset ring-white/50 dark:ring-0 overflow-hidden ${className}`}
+      className={`overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-card)] ${className}`}
     >
       {children}
     </div>
@@ -60,8 +60,8 @@ export function SectionHeader({
     secondary: "bg-secondary-100 text-secondary-700 dark:bg-secondary-800/40 dark:text-secondary-200",
   };
   return (
-    <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4">
-      <div className="flex items-start gap-3">
+    <div className="flex flex-col gap-4 px-5 pb-4 pt-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+      <div className="flex min-w-0 items-start gap-3">
         {Icon && (
           <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${toneClasses[iconTone]}`}>
             <Icon className="h-[18px] w-[18px]" strokeWidth={2} />
@@ -88,12 +88,12 @@ export function CardHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] px-6 py-4">
-      <div>
-        <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
-        {description && <p className="mt-0.5 text-xs text-[var(--text-muted)]">{description}</p>}
+    <div className="flex flex-col gap-4 border-b border-[var(--border)] px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+      <div className="min-w-0">
+        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+        {description && <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--text-muted)]">{description}</p>}
       </div>
-      {action}
+      {action && <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div>}
     </div>
   );
 }
@@ -135,14 +135,14 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = "primary", className = "", ...props }: ButtonProps) {
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-400/60";
+    "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-semibold transition-[transform,background-color,border-color,color,box-shadow] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:shrink-0";
   const variants = {
-    primary: "bg-secondary-600 text-white hover:bg-secondary-700 dark:bg-secondary-500 dark:hover:bg-secondary-400 shadow-sm",
-    secondary: "bg-accent-600 text-white hover:bg-accent-700 dark:bg-accent-500 dark:hover:bg-accent-400 shadow-sm",
+    primary: "border border-secondary-600 bg-secondary-600 text-white shadow-sm hover:border-secondary-700 hover:bg-secondary-700 hover:shadow-[var(--shadow-card)] dark:border-secondary-500 dark:bg-secondary-500 dark:hover:border-secondary-400 dark:hover:bg-secondary-400",
+    secondary: "border border-accent-600 bg-accent-600 text-white shadow-sm hover:border-accent-700 hover:bg-accent-700 hover:shadow-[var(--shadow-card)] dark:border-accent-500 dark:bg-accent-500 dark:hover:border-accent-400 dark:hover:bg-accent-400",
     ghost:
-      "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)] hover:bg-ink-100 dark:hover:bg-ink-800",
+      "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)] shadow-sm hover:border-[var(--border-strong)] hover:bg-[var(--bg-subtle)]",
     danger:
-      "border border-[color:var(--color-danger)]/30 text-[color:var(--color-danger)] hover:bg-[color:var(--color-danger)]/10",
+      "border border-[color:var(--color-danger)]/35 bg-[var(--bg-elevated)] text-[color:var(--color-danger)] hover:bg-[color:var(--color-danger)]/10",
   };
   return <button className={`${base} ${variants[variant]} ${className}`} {...props} />;
 }
@@ -150,7 +150,7 @@ export function Button({ variant = "primary", className = "", ...props }: Button
 export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
+      className={`min-h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm transition-[border-color,box-shadow,background-color] placeholder:text-[var(--text-muted)] hover:border-[var(--border-strong)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/30 disabled:cursor-not-allowed disabled:bg-[var(--bg-subtle)] disabled:opacity-60 ${className}`}
       {...props}
     />
   );
@@ -159,7 +159,7 @@ export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInpu
 export function Select({ className = "", children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
-      className={`w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
+      className={`min-h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm transition-[border-color,box-shadow,background-color] hover:border-[var(--border-strong)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/30 disabled:cursor-not-allowed disabled:bg-[var(--bg-subtle)] disabled:opacity-60 ${className}`}
       {...props}
     >
       {children}
@@ -195,7 +195,7 @@ export function Badge({
   };
   return (
     <span
-      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
+      className={`inline-flex items-center gap-1 rounded-lg border border-transparent px-2 py-0.5 text-xs font-semibold ${tones[tone]}`}
       title={title}
     >
       {children}
@@ -217,8 +217,11 @@ export function StatusDot({ tone = "success", label }: { tone?: "success" | "dan
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="px-6 py-14 text-center">
-      <p className="text-sm text-[var(--text-muted)]">{title}</p>
-      {hint && <p className="mt-1 text-xs text-[var(--text-muted)]">{hint}</p>}
+      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-subtle)]" aria-hidden="true">
+        <Inbox className="h-4 w-4 text-[var(--text-muted)]" />
+      </div>
+      <p className="text-sm font-semibold text-[var(--text)]">{title}</p>
+      {hint && <p className="mx-auto mt-1.5 max-w-md text-sm leading-5 text-[var(--text-muted)]">{hint}</p>}
     </div>
   );
 }
@@ -473,21 +476,23 @@ export function TablePagination({
 }) {
   if (pages <= 1) return null;
   return (
-    <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2 text-xs">
+    <div className="flex flex-col gap-2 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
       <span className="text-[var(--text-muted)]">{total.toLocaleString()} total</span>
       <div className="flex items-center gap-1">
         <button
+          type="button"
           disabled={page <= 1}
           onClick={() => onPage(page - 1)}
-          className="rounded px-2 py-1 hover:bg-[var(--bg-subtle)] disabled:opacity-40"
+          className="inline-flex h-9 items-center justify-center rounded-lg border border-transparent px-3 font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Prev
+          Previous
         </button>
-        <span className="px-2 py-1 tabular-nums">{page}/{pages}</span>
+        <span className="min-w-16 px-2 py-1 text-center font-medium tabular-nums">{page} / {pages}</span>
         <button
+          type="button"
           disabled={page >= pages}
           onClick={() => onPage(page + 1)}
-          className="rounded px-2 py-1 hover:bg-[var(--bg-subtle)] disabled:opacity-40"
+          className="inline-flex h-9 items-center justify-center rounded-lg border border-transparent px-3 font-medium text-[var(--text-muted)] transition-colors hover:border-[var(--border)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
         >
           Next
         </button>

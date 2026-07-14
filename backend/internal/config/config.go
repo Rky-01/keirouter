@@ -57,6 +57,10 @@ type DatabaseConfig struct {
 	// MaxOpenConns/MaxIdleConns tune the pool (postgres-relevant).
 	MaxOpenConns int `koanf:"max_open_conns"`
 	MaxIdleConns int `koanf:"max_idle_conns"`
+	// ConnMaxLifetime recycles long-lived connections before managed Postgres
+	// proxies or load balancers expire them. ConnMaxIdleTime bounds idle sockets.
+	ConnMaxLifetime time.Duration `koanf:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `koanf:"conn_max_idle_time"`
 }
 
 // SecurityConfig holds auth and encryption settings.
@@ -258,9 +262,11 @@ func Default() Config {
 			CORSOrigins:        []string{"*"},
 		},
 		Database: DatabaseConfig{
-			Driver:       "sqlite",
-			MaxOpenConns: 0,
-			MaxIdleConns: 0,
+			Driver:          "sqlite",
+			MaxOpenConns:    0,
+			MaxIdleConns:    0,
+			ConnMaxLifetime: 30 * time.Minute,
+			ConnMaxIdleTime: 5 * time.Minute,
 		},
 		Security: SecurityConfig{
 			SessionTTL:       24 * time.Hour,
@@ -364,7 +370,7 @@ func Load(filePath string) (Config, error) {
 	return cfg, nil
 }
 
-func (c Config) validate() error {
+func (c *Config) validate() error {
 	switch c.Database.Driver {
 	case "sqlite", "postgres":
 	default:
@@ -372,6 +378,12 @@ func (c Config) validate() error {
 	}
 	if c.Database.Driver == "postgres" && c.Database.DSN == "" {
 		return fmt.Errorf("database.dsn is required when driver=postgres")
+	}
+	if c.Database.ConnMaxLifetime <= 0 {
+		c.Database.ConnMaxLifetime = 30 * time.Minute
+	}
+	if c.Database.ConnMaxIdleTime <= 0 {
+		c.Database.ConnMaxIdleTime = 5 * time.Minute
 	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port out of range: %d", c.Server.Port)

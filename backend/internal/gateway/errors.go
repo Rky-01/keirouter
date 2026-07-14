@@ -3,6 +3,8 @@ package gateway
 import (
 	"log/slog"
 	"strings"
+
+	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
 // sanitizeError converts an internal error into a safe message for API responses.
@@ -103,33 +105,35 @@ func sanitizeValidationError(err error) string {
 	return "validation failed"
 }
 
-// sanitizeUpstreamError converts upstream provider errors to safe messages.
+// sanitizeUpstreamError maps structured failure categories to stable client
+// messages. It intentionally never returns ProviderError.Message because that
+// field may contain an upstream response body, endpoint, or provider-specific
+// diagnostic detail.
 func sanitizeUpstreamError(err error) string {
 	if err == nil {
-		return "upstream provider error"
+		return "upstream provider request failed"
 	}
 
-	msg := err.Error()
-
-	// Rate limit errors
-	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") {
-		return "upstream provider rate limit exceeded"
-	}
-
-	// Auth errors
-	if strings.Contains(msg, "401") || strings.Contains(msg, "403") {
+	switch core.AsProviderError(err).Kind {
+	case core.ErrBadRequest:
+		return "upstream provider rejected the request"
+	case core.ErrAuth:
 		return "upstream provider authentication failed"
-	}
-
-	// Quota errors
-	if strings.Contains(msg, "402") || strings.Contains(msg, "quota") {
+	case core.ErrRateLimit:
+		return "upstream provider rate limit exceeded"
+	case core.ErrQuotaExhausted:
 		return "upstream provider quota exceeded"
+	case core.ErrTimeout:
+		return "upstream provider timed out"
+	case core.ErrCapability:
+		return "requested capability is unavailable"
+	case core.ErrBudgetBlocked:
+		return "request blocked by budget policy"
+	case core.ErrPolicyBlocked:
+		return "request blocked by policy"
+	case core.ErrInternal:
+		return "an internal error occurred"
+	default:
+		return "upstream provider request failed"
 	}
-
-	// Server errors
-	if strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503") {
-		return "upstream provider is experiencing issues"
-	}
-
-	return "upstream provider error"
 }

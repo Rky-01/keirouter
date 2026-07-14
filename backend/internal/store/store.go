@@ -80,11 +80,29 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, dataDir string) (*DB, 
 			sqlDB.SetMaxIdleConns(maxOpen)
 		}
 	} else {
-		if cfg.MaxOpenConns > 0 {
-			sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+		maxOpen := cfg.MaxOpenConns
+		if maxOpen <= 0 {
+			maxOpen = 25
 		}
-		if cfg.MaxIdleConns > 0 {
-			sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+		// Migration locking holds one dedicated session while DDL runs on the
+		// pool, so PostgreSQL needs at least one additional connection.
+		if maxOpen < 2 {
+			maxOpen = 2
+		}
+		maxIdle := cfg.MaxIdleConns
+		if maxIdle <= 0 {
+			maxIdle = min(10, maxOpen)
+		}
+		if maxIdle > maxOpen {
+			maxIdle = maxOpen
+		}
+		sqlDB.SetMaxOpenConns(maxOpen)
+		sqlDB.SetMaxIdleConns(maxIdle)
+		if cfg.ConnMaxLifetime > 0 {
+			sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+		}
+		if cfg.ConnMaxIdleTime > 0 {
+			sqlDB.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 		}
 	}
 
@@ -187,7 +205,7 @@ func (db *DB) epochExpr(operand string) string {
 // and an explicit format so the scanned value is always a string.
 func (db *DB) dateExpr(operand string) string {
 	if db.dialect == DialectPostgres {
-		return "TO_CHAR(" + operand + "::timestamptz, 'YYYY-MM-DD')"
+		return "TO_CHAR((" + operand + "::timestamptz AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
 	}
 	return "DATE(" + operand + ")"
 }

@@ -23,9 +23,11 @@ database:
   # SQLite: empty => <data_dir>/keirouter.db. Postgres: required DSN, e.g.
   #   postgres://user:pass@localhost:5432/keirouter?sslmode=disable
   dsn: ""
-  # Connection pool sizing (Postgres-relevant).
-  max_open_conns: 10
-  max_idle_conns: 5
+  # Connection pool sizing and recycling (Postgres-relevant).
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+  conn_max_idle_time: 5m
 
 security:
   # Base64 32-byte root key for envelope encryption of stored credentials.

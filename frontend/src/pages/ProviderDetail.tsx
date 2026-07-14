@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type QuotaAccount, type CodexUsageDetails } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -25,6 +25,8 @@ import {
   EmptyState,
   ErrorBanner,
   Modal,
+  TablePagination,
+  useClientPagination,
 } from "../components/ui";
 
 // redirectURIForProvider returns the OAuth callback the provider redirects to
@@ -339,19 +341,34 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Failed to delete provider", e.message),
   });
 
-  // Sort accounts by priority for display.
+  // Sort accounts by priority for display, then keep the visible list bounded.
+  // Selection remains global so bulk actions can span multiple pages.
   const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
+  const ACCOUNTS_PER_PAGE = 8;
+  const accountPagination = useClientPagination(sortedAccounts, ACCOUNTS_PER_PAGE);
+  const { page: accountPage, pages: accountPages, paged: paginatedAccounts, setPage: setAccountPage } = accountPagination;
+  const accountPageStart = (accountPage - 1) * ACCOUNTS_PER_PAGE;
   const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
 
-  // Derived selection state (scoped to this provider's accounts).
-  const selectedList = sortedAccounts.filter((a) => selectedAccountIds.has(a.id));
-  const allAccountsSelected = sortedAccounts.length > 0 && selectedList.length === sortedAccounts.length;
-  const someAccountsSelected = selectedList.length > 0 && !allAccountsSelected;
+  useEffect(() => {
+    setAccountPage(1);
+  }, [id, setAccountPage]);
+
+  // Derived selection state (scoped globally for actions, locally for the
+  // current-page selection control).
+  const selectedList = sortedAccounts.filter((account) => selectedAccountIds.has(account.id));
+  const selectedOnPage = paginatedAccounts.filter((account) => selectedAccountIds.has(account.id));
+  const allPageAccountsSelected = paginatedAccounts.length > 0 && selectedOnPage.length === paginatedAccounts.length;
+  const somePageAccountsSelected = selectedOnPage.length > 0 && !allPageAccountsSelected;
   const bulkBusy = bulkUpdateAccounts.isPending || bulkDeleteAccounts.isPending;
 
-  const toggleSelectAllAccounts = () => {
-    if (allAccountsSelected) clearAccountSelection();
-    else setSelectedAccountIds(new Set(sortedAccounts.map((a) => a.id)));
+  const toggleSelectPageAccounts = () => {
+    setSelectedAccountIds((previous) => {
+      const next = new Set(previous);
+      if (allPageAccountsSelected) paginatedAccounts.forEach((account) => next.delete(account.id));
+      else paginatedAccounts.forEach((account) => next.add(account.id));
+      return next;
+    });
   };
   const handleBulkDisable = () => {
     const ids = selectedList.filter((a) => !a.disabled).map((a) => a.id);
@@ -447,157 +464,166 @@ export function ProviderDetailPage() {
   // shared config to bulk against) and for no-auth providers (nothing to bulk).
   const providerSupportsApiKey = provider.auth_modes.includes("api_key") || provider.auth_kind === "api_key";
   const supportsBulkUpload = supportsManualConnect && providerSupportsApiKey && provider.id !== "azure";
+  const enabledAccounts = myAccounts.filter((account) => !account.disabled).length;
+  const activeModelCount = Math.max(0, modelList.length - disabledModelIds.size);
+  const hasPrimaryConnect = hasCustomModal || !!oauthProvider || supportsManualConnect;
+  const hasAlternativeManualConnect = !hasCustomModal && !!oauthProvider && supportsManualConnect;
+  const primaryConnectLabel = hasCustomModal
+    ? `Connect ${provider.display_name}`
+    : oauthProvider
+      ? `Connect ${provider.display_name}`
+      : provider.auth_kind === "none"
+        ? "Enable provider"
+        : "Add API key";
+  const openPrimaryConnect = () => {
+    if (isKiro) setKiroOpen(true);
+    else if (isQoder) setQoderOpen(true);
+    else if (isKilocode) setKilocodeOpen(true);
+    else if (isCodebuddy) setCodebuddyOpen(true);
+    else if (isKimchi) setKimchiOpen(true);
+    else if (isCursor) setCursorOpen(true);
+    else if (isCommandCode) setCommandcodeOpen(true);
+    else if (oauthProvider) setOauthOpen(true);
+    else if (supportsManualConnect) setAddKeyOpen(true);
+  };
 
   return (
     <>
-      <Link
-        to="/providers"
-        className="mb-5 inline-flex items-center gap-2 text-sm font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to Providers
-      </Link>
+      <nav aria-label="Breadcrumb" className="mb-4 flex items-center gap-2 text-sm text-[var(--text-muted)]">
+        <Link
+          to="/providers"
+          className="inline-flex min-h-9 items-center gap-2 rounded-lg px-1 font-medium transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Providers
+        </Link>
+        <span aria-hidden="true" className="text-[var(--border-strong)]">/</span>
+        <span className="truncate text-[var(--text)]">{provider.display_name}</span>
+      </nav>
 
-      <header className="mb-7 flex items-start gap-4">
-        <ProviderIcon provider={provider} size={56} />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="font-display text-3xl font-semibold tracking-tight">{provider.display_name}</h1>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
-                {myAccounts.length} connected {myAccounts.length === 1 ? "account" : "accounts"}
-              </p>
+      <Card className="mb-8">
+        <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-4 sm:gap-5">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2 shadow-sm">
+              <ProviderIcon provider={provider} size={56} />
             </div>
+            <div className="min-w-0 pt-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {provider.display_name}
+                </h1>
+                {provider.deprecated && <Badge tone="warning">Limited support</Badge>}
+                {provider.auth_kind === "none" && <Badge tone="success">No credentials required</Badge>}
+              </div>
+              <p className="mt-1.5 max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
+                Manage credentials, routing behavior, and the model catalog used for requests to this provider.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {(provider.service_kinds ?? []).map((kind) => (
+                  <Badge key={kind} tone="accent">{kind}</Badge>
+                ))}
+                <Badge tone="neutral">{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
+                {provider.custom && <Badge tone="secondary">Custom provider</Badge>}
+              </div>
+              {provider.custom && provider.base_url && (
+                <div className="mt-3">
+                  <BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
+            {hasAlternativeManualConnect && (
+              <Button variant="ghost" onClick={() => setAddKeyOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add API key
+              </Button>
+            )}
+            {hasPrimaryConnect && (
+              <Button onClick={openPrimaryConnect}>
+                <Plug className="h-4 w-4" />
+                {primaryConnectLabel}
+              </Button>
+            )}
             {provider.custom && (
               <Button
-                variant="ghost"
-                className="h-8 shrink-0 px-3 text-xs text-[color:var(--color-danger)] hover:bg-[color:var(--color-danger)]/10"
+                variant="danger"
                 onClick={() => setDeleteProviderOpen(true)}
-                title="Delete this custom provider"
+                title="Permanently delete this custom provider"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete provider
+                <Trash2 className="h-4 w-4" />
+                Delete
               </Button>
             )}
           </div>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {(provider.service_kinds ?? []).map((k) => (
-              <Badge key={k} tone="accent">
-                {k}
-              </Badge>
-            ))}
-            {provider.deprecated && (
-              <Badge tone="warning" title={provider.notice || "Account may be restricted"}>
-                <AlertTriangle className="mr-1 h-3 w-3" />
-                unofficial
-              </Badge>
-            )}
-            {provider.auth_kind === "none" && (
-              <Badge tone="accent">free</Badge>
-            )}
-          </div>
-          {provider.custom && provider.base_url && (
-            <BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} />
-          )}
         </div>
-      </header>
 
-      {provider.deprecated && provider.notice && (
-        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-4 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{provider.notice}</span>
+        <div className="grid grid-cols-1 border-t border-[var(--border)] bg-[var(--bg-subtle)] sm:grid-cols-3 sm:divide-x sm:divide-[var(--border)]">
+          <div className="px-5 py-4 sm:px-6">
+            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Connected accounts</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums">{myAccounts.length}</p>
+          </div>
+          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
+            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled accounts</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums">{enabledAccounts}</p>
+          </div>
+          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
+            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled models</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums">{models.isLoading ? "—" : activeModelCount}</p>
+          </div>
         </div>
-      )}
+
+        {provider.deprecated && provider.notice && (
+          <div className="flex items-start gap-3 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-5 py-4 text-sm leading-6 text-[color:var(--color-warning)] sm:px-6">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{provider.notice}</span>
+          </div>
+        )}
+      </Card>
 
       <div className="space-y-6">
-        <Card>
-          <CardHeader
-            title="Connected accounts"
-            action={
-              <div className="flex items-center gap-2">
-                {myAccounts.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    className="h-8 px-3 text-xs"
-                    onClick={runTestAll}
-                    disabled={testingAll}
-                  >
-                    <CheckCircle className={`h-3.5 w-3.5 ${testingAll ? "animate-pulse" : ""}`} />
-                    {testingAll
-                      ? `Testing ${Object.values(testResults).filter((r) => r.status !== "testing").length}/${myAccounts.length}`
-                      : "Test all"}
-                  </Button>
-                )}
-                {isKiro && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setKiroOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect Kiro
-                  </Button>
-                )}
-                {isQoder && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setQoderOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect Qoder
-                  </Button>
-                )}
-                {isKilocode && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setKilocodeOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect Kilo Code
-                  </Button>
-                )}
-                {isKimchi && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setKimchiOpen(true)}>
-                    <Plus className="h-3.5 w-3.5" />
-                    Connect Kimchi
-                  </Button>
-                )}
-                {isCodebuddy && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setCodebuddyOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect CodeBuddy
-                  </Button>
-                )}
-                {isCursor && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setCursorOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect Cursor
-                  </Button>
-                )}
-                {isCommandCode && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setCommandcodeOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect CLI
-                  </Button>
-                )}
-                {!hasCustomModal && oauthProvider && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setOauthOpen(true)}>
-                    <Plug className="h-3.5 w-3.5" />
-                    Connect {provider.display_name}
-                  </Button>
-                )}
-                {supportsManualConnect && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setAddKeyOpen(true)}>
-                    <Plus className="h-3.5 w-3.5" />
-                    {provider.auth_kind === "none" ? "Connect" : "Add API key"}
-                  </Button>
-                )}
-                {supportsBulkUpload && (
-                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setBulkOpen(true)}>
-                    <Layers className="h-3.5 w-3.5" />
-                    Bulk add
-                  </Button>
-                )}
-              </div>
-            }
-          />
-          {routing.data && (
+        {routing.data && (
+          <Card>
+            <CardHeader
+              title="Routing policy"
+              description="Choose how requests are distributed across healthy accounts for this provider."
+            />
             <RoutingControls
               settings={routing.data}
               saving={updateRouting.isPending}
               onUpdate={(patch) => updateRouting.mutate(patch)}
             />
-          )}
+          </Card>
+        )}
+
+        <Card>
+          <CardHeader
+            title="Connected accounts"
+            description="Connected upstream credentials and their routing configuration."
+            action={
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {myAccounts.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    onClick={runTestAll}
+                    disabled={testingAll}
+                  >
+                    {testingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+                    {testingAll
+                      ? `Testing ${Object.values(testResults).filter((result) => result.status !== "testing").length}/${myAccounts.length}`
+                      : "Test all"}
+                  </Button>
+                )}
+                {supportsBulkUpload && (
+                  <Button variant="ghost" onClick={() => setBulkOpen(true)}>
+                    <Layers className="h-4 w-4" />
+                    Import keys
+                  </Button>
+                )}
+              </div>
+            }
+          />
           {myAccounts.some((a) => a.needs_reconnect) && (
             <div className="flex items-start gap-2.5 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-6 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
               <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -616,62 +642,80 @@ export function ProviderDetailPage() {
             />
           ) : (
             <>
-              <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5">
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-[var(--text-muted)]">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
-                    checked={allAccountsSelected}
-                    ref={(el) => { if (el) el.indeterminate = someAccountsSelected; }}
-                    onChange={toggleSelectAllAccounts}
-                  />
-                  Select all
-                </label>
-                {selectedList.length > 0 ? (
-                  <>
-                    <span className="text-xs text-[var(--text-muted)]">{selectedList.length} selected</span>
-                    <div className="flex-1" />
-                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkEnable} disabled={bulkBusy}>
-                      <ToggleRight className="h-3.5 w-3.5 text-emerald-500" />
-                      Enable
-                    </Button>
-                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkDisable} disabled={bulkBusy}>
-                      <ToggleLeft className="h-3.5 w-3.5" />
-                      Disable
-                    </Button>
-                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkDeleteAccounts} disabled={bulkBusy}>
-                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
-                      Delete
-                    </Button>
-                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={clearAccountSelection} disabled={bulkBusy}>
-                      Clear
-                    </Button>
-                  </>
-                ) : (
-                  <span className="text-xs text-[var(--text-muted)]">Select accounts for bulk actions</span>
-                )}
-              </div>
+              {selectedList.length > 0 ? (
+                <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-t border-accent-200 bg-accent-50 px-4 py-3 shadow-sm dark:border-accent-800 dark:bg-accent-900/30 sm:px-5">
+                  <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-accent-800 dark:text-accent-200">
+                    <input
+                      type="checkbox"
+                      aria-label="Select accounts on this page"
+                      className="h-4 w-4 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+                      checked={allPageAccountsSelected}
+                      ref={(element) => { if (element) element.indeterminate = somePageAccountsSelected; }}
+                      onChange={toggleSelectPageAccounts}
+                    />
+                    {selectedList.length} selected
+                  </label>
+                  <div className="hidden flex-1 sm:block" />
+                  <Button variant="ghost" onClick={handleBulkEnable} disabled={bulkBusy}>
+                    <ToggleRight className="h-4 w-4 text-emerald-600" />
+                    Enable
+                  </Button>
+                  <Button variant="ghost" onClick={handleBulkDisable} disabled={bulkBusy}>
+                    <ToggleLeft className="h-4 w-4" />
+                    Disable
+                  </Button>
+                  <Button variant="danger" onClick={handleBulkDeleteAccounts} disabled={bulkBusy}>
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </Button>
+                  <Button variant="ghost" onClick={clearAccountSelection} disabled={bulkBusy}>
+                    Clear
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5 sm:px-5">
+                  <span className="text-xs text-[var(--text-muted)]">
+                    {sortedAccounts.length} connected {sortedAccounts.length === 1 ? "account" : "accounts"}
+                  </span>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]">
+                    <input
+                      type="checkbox"
+                      aria-label="Select accounts on this page"
+                      className="h-4 w-4 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+                      checked={allPageAccountsSelected}
+                      onChange={toggleSelectPageAccounts}
+                    />
+                    Select page
+                  </label>
+                </div>
+              )}
               <div className="divide-y divide-[var(--border)]">
-                {sortedAccounts.map((a, i) => (
+                {paginatedAccounts.map((account, pageIndex) => (
                   <AccountRow
-                    key={a.id}
-                    account={a}
-                    index={i}
+                    key={account.id}
+                    account={account}
+                    index={accountPageStart + pageIndex}
                     total={sortedAccounts.length}
                     pools={pools.data?.pools ?? []}
-                    selected={selectedAccountIds.has(a.id)}
-                    onToggleSelect={() => toggleAccountSelection(a.id)}
-                    onDelete={() => remove.mutate(a.id)}
-                    onMoveUp={() => moveAccount(a.id, "up")}
-                    onMoveDown={() => moveAccount(a.id, "down")}
-                    onTest={() => runTest(a.id)}
-                    onUpdateProxy={(patch) => updateAccount.mutate({ id: a.id, patch })}
-                    testResult={testResults[a.id]}
+                    selected={selectedAccountIds.has(account.id)}
+                    onToggleSelect={() => toggleAccountSelection(account.id)}
+                    onDelete={() => remove.mutate(account.id)}
+                    onMoveUp={() => moveAccount(account.id, "up")}
+                    onMoveDown={() => moveAccount(account.id, "down")}
+                    onTest={() => runTest(account.id)}
+                    onUpdateProxy={(patch) => updateAccount.mutate({ id: account.id, patch })}
+                    testResult={testResults[account.id]}
                     disabledByBatch={testingAll}
-                    quotaData={quotaMap[a.id]}
+                    quotaData={quotaMap[account.id]}
                   />
                 ))}
               </div>
+              <TablePagination
+                page={accountPage}
+                pages={accountPages}
+                total={sortedAccounts.length}
+                onPage={setAccountPage}
+              />
             </>
           )}
         </Card>
@@ -680,55 +724,52 @@ export function ProviderDetailPage() {
         {models.data && (
           <Card>
             <CardHeader
-              title="Available Models"
-              description={`${modelList.length} model${modelList.length === 1 ? "" : "s"} configured for this provider.`}
+              title="Model catalog"
+              description={`${activeModelCount} of ${modelList.length} model${modelList.length === 1 ? "" : "s"} enabled in this catalog.`}
               action={
                 provider?.custom ? (
                   <Button
                     variant="secondary"
-                    className="h-8 px-3 text-xs"
                     disabled={importModelsMut.isPending}
                     onClick={() => importModelsMut.mutate()}
                     title="Fetch the upstream /models listing and register each model"
                   >
-                    <Download className="h-3.5 w-3.5" />
-                    {importModelsMut.isPending ? "Fetching…" : "Fetch from /models"}
+                    {importModelsMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {importModelsMut.isPending ? "Fetching models…" : "Sync from /models"}
                   </Button>
                 ) : undefined
               }
             />
             {modelList.length > 0 && (
-            <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative w-full max-w-sm">
-                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+            <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="relative w-full lg:max-w-md">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
                 <Input
-                  placeholder="Search models..."
+                  aria-label="Search provider models"
+                  placeholder="Search by model name, ID, or capability…"
                   value={modelSearchQuery}
-                  onChange={(e) => setModelSearchQuery(e.target.value)}
-                  className="pl-9 h-8 text-sm"
+                  onChange={(event) => setModelSearchQuery(event.target.value)}
+                  className="pl-10"
                 />
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
+              <div className="flex min-h-10 flex-wrap items-center gap-2">
+                <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]">
                   <input
                     type="checkbox"
-                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
-                    checked={filteredModels.length > 0 && filteredModels.every((m) => selectedModelIds.has(m.id))}
-                    ref={(el) => {
-                      if (el) {
-                        const someSelected = filteredModels.some((m) => selectedModelIds.has(m.id));
-                        const allSelected = filteredModels.length > 0 && filteredModels.every((m) => selectedModelIds.has(m.id));
-                        el.indeterminate = someSelected && !allSelected;
+                    className="h-4 w-4 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+                    checked={filteredModels.length > 0 && filteredModels.every((model) => selectedModelIds.has(model.id))}
+                    ref={(element) => {
+                      if (element) {
+                        const someSelected = filteredModels.some((model) => selectedModelIds.has(model.id));
+                        const allSelected = filteredModels.length > 0 && filteredModels.every((model) => selectedModelIds.has(model.id));
+                        element.indeterminate = someSelected && !allSelected;
                       }
                     }}
-                    onChange={(e) => {
-                      setSelectedModelIds((prev) => {
-                        const next = new Set(prev);
-                        if (e.target.checked) {
-                          filteredModels.forEach((m) => next.add(m.id));
-                        } else {
-                          filteredModels.forEach((m) => next.delete(m.id));
-                        }
+                    onChange={(event) => {
+                      setSelectedModelIds((previous) => {
+                        const next = new Set(previous);
+                        if (event.target.checked) filteredModels.forEach((model) => next.add(model.id));
+                        else filteredModels.forEach((model) => next.delete(model.id));
                         return next;
                       });
                     }}
@@ -736,34 +777,30 @@ export function ProviderDetailPage() {
                   Select all
                 </label>
                 {selectedModelIds.size > 0 && (
-                  <span className="text-xs text-[var(--text-muted)]">{selectedModelIds.size} selected</span>
-                )}
-                <Button
-                  variant="ghost"
-                  className="h-8 px-3 text-xs"
-                  onClick={() => enableModelsMut.mutate([...selectedModelIds])}
-                  disabled={enableModelsMut.isPending || selectedModelIds.size === 0}
-                >
-                  <ToggleRight className="h-3.5 w-3.5 text-accent-500" />
-                  Enable
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="h-8 px-3 text-xs"
-                  onClick={() => disableModelsMut.mutate([...selectedModelIds])}
-                  disabled={disableModelsMut.isPending || selectedModelIds.size === 0}
-                >
-                  <ToggleLeft className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                  Disable
-                </Button>
-                {selectedModelIds.size > 0 && (
-                  <Button
-                    variant="ghost"
-                    className="h-8 px-2 text-xs"
-                    onClick={() => setSelectedModelIds(new Set())}
-                  >
-                    Clear
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-accent-200 bg-accent-50 p-1.5 dark:border-accent-800 dark:bg-accent-900/30">
+                    <span className="px-1.5 text-xs font-medium text-accent-800 dark:text-accent-200">
+                      {selectedModelIds.size} selected
+                    </span>
+                    <Button
+                      variant="ghost"
+                      onClick={() => enableModelsMut.mutate([...selectedModelIds])}
+                      disabled={enableModelsMut.isPending}
+                    >
+                      <ToggleRight className="h-4 w-4 text-emerald-600" />
+                      Enable
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => disableModelsMut.mutate([...selectedModelIds])}
+                      disabled={disableModelsMut.isPending}
+                    >
+                      <ToggleLeft className="h-4 w-4" />
+                      Disable
+                    </Button>
+                    <Button variant="ghost" onClick={() => setSelectedModelIds(new Set())}>
+                      Clear
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>
@@ -790,7 +827,7 @@ export function ProviderDetailPage() {
                 )}
               </div>
             ) : (
-              <div className={`grid grid-cols-1 gap-px overflow-hidden border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-3 ${totalModelPages <= 1 ? "rounded-b-2xl" : ""}`}>
+              <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
                 {paginatedModels.map((m) => (
                   <ModelCell
                     key={m.id}
@@ -1049,60 +1086,66 @@ function RoutingControls({
   const ttlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
   const rotatesAccounts = mode === "round-robin" || mode === "smart-round-robin";
 
+  const routingDescription = mode === "inherit"
+    ? "Use the router-wide account strategy."
+    : mode === "fill-first"
+      ? "Keep using the highest-priority healthy account until it is unavailable."
+      : mode === "round-robin"
+        ? "Rotate across healthy accounts after the configured request window."
+        : "Preserve client affinity while balancing traffic across healthy accounts.";
+
   return (
-    <div className="border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Route className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-          <span className="text-xs font-medium text-[var(--text-muted)]">Routing</span>
-        </div>
+    <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+        <label htmlFor="provider-routing-strategy" className="flex items-center gap-2 text-sm font-semibold">
+          <Route className="h-4 w-4 text-accent-600" />
+          Distribution strategy
+        </label>
+        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">{routingDescription}</p>
         <select
+          id="provider-routing-strategy"
           value={mode}
           disabled={saving}
-          onChange={(e) => onUpdate({ routing_strategy: e.target.value })}
-          className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--color-accent-500)] focus:ring-1 focus:ring-[var(--color-accent-500)]/30"
+          onChange={(event) => onUpdate({ routing_strategy: event.target.value })}
+          className="mt-3 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text)] outline-none transition-colors focus:border-accent-400 focus-visible:ring-2 focus-visible:ring-accent-400/40 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {routingOptions.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
+          {routingOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
+      </div>
 
-        {rotatesAccounts && (
-          <>
-            <span className="text-[var(--border)]">·</span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-[var(--text-muted)]">Sticky</span>
-              <Input
-                type="number"
-                min={1}
-                max={100}
-                value={stickyLimit}
-                disabled={saving}
-                onChange={(e) => onUpdate({ sticky_limit: parseInt(e.target.value, 10) || 1 })}
-                className="h-7 w-16 text-center text-xs"
-              />
-            </div>
-          </>
-        )}
+      <div className={`rounded-xl border border-[var(--border)] p-4 ${rotatesAccounts ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
+        <label htmlFor="provider-sticky-limit" className="text-sm font-semibold">Requests per account</label>
+        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Requests kept on one account before rotating.</p>
+        <Input
+          id="provider-sticky-limit"
+          type="number"
+          min={1}
+          max={100}
+          value={stickyLimit}
+          disabled={saving || !rotatesAccounts}
+          onChange={(event) => onUpdate({ sticky_limit: parseInt(event.target.value, 10) || 1 })}
+          className="mt-3"
+        />
+      </div>
 
-        {mode === "smart-round-robin" && (
-          <>
-            <span className="text-[var(--border)]">·</span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-[var(--text-muted)]">Affinity TTL</span>
-              <Input
-                type="number"
-                min={1}
-                max={168}
-                value={ttlHours}
-                disabled={saving}
-                onChange={(e) => onUpdate({ affinity_ttl_minutes: (parseInt(e.target.value, 10) || 1) * 60 })}
-                className="h-7 w-16 text-center text-xs"
-              />
-              <span className="text-xs text-[var(--text-muted)]">h</span>
-            </div>
-          </>
-        )}
+      <div className={`rounded-xl border border-[var(--border)] p-4 ${mode === "smart-round-robin" ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
+        <label htmlFor="provider-affinity-ttl" className="text-sm font-semibold">Affinity lifetime</label>
+        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Hours before a client can be assigned to another account.</p>
+        <div className="relative mt-3">
+          <Input
+            id="provider-affinity-ttl"
+            type="number"
+            min={1}
+            max={168}
+            value={ttlHours}
+            disabled={saving || mode !== "smart-round-robin"}
+            onChange={(event) => onUpdate({ affinity_ttl_minutes: (parseInt(event.target.value, 10) || 1) * 60 })}
+            className="pr-14"
+          />
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)]">hours</span>
+        </div>
       </div>
     </div>
   );
@@ -1158,163 +1201,165 @@ function AccountRow({
 
   const hasQuota = !!quotaData?.upstream_quotas && quotaData.upstream_quotas.length > 0;
   const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const hasExpandableDetails = hasQuota || a.provider === "codex";
 
   return (
-    <div className={`px-4 py-3 ${a.disabled ? "opacity-60" : ""} ${selected ? "bg-accent-50/50 dark:bg-accent-900/10" : ""}`}>
-      {/* Header row */}
-      <div className="flex items-center justify-between gap-3">
+    <div className={`px-3 py-2.5 transition-colors sm:px-4 ${a.disabled ? "bg-[var(--bg-subtle)]/50" : ""} ${selected ? "bg-accent-50/70 dark:bg-accent-900/15" : "hover:bg-[var(--bg-subtle)]/50"}`}>
+      <div className="flex flex-wrap items-center gap-2">
         {onToggleSelect && (
           <input
             type="checkbox"
             checked={!!selected}
             onChange={onToggleSelect}
             aria-label={`Select ${a.label || a.provider}`}
-            className="h-3.5 w-3.5 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+            className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
           />
         )}
-        <div className="min-w-0 flex-1">
+
+        <div className="min-w-36 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-medium">{a.label || a.provider}</span>
-            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API Key"}</Badge>
-            {a.disabled && <Badge tone="danger">disabled</Badge>}
+            <span className="truncate text-sm font-semibold" title={a.label || a.provider}>{a.label || a.provider}</span>
+            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
+            {a.disabled && <Badge tone="danger">Disabled</Badge>}
             {a.needs_reconnect && (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-                title="The OAuth refresh token was revoked by the provider. Delete this account and reconnect."
-              >
+              <Badge tone="warning" title="The OAuth token was revoked. Delete this account and reconnect.">
                 <RefreshCw className="h-3 w-3" />
-                reconnect required
-              </span>
+                Reconnect
+              </Badge>
             )}
-            {testResult?.status === "ok" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                ✓ ok
-              </span>
-            )}
-            {testResult?.status === "error" && (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                title={testResult.message}
-              >
-                ✗ {testResult.message ? "failed" : "error"}
-              </span>
-            )}
-            {testResult?.status === "testing" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
-                testing…
-              </span>
-            )}
+            {testResult?.status === "ok" && <Badge tone="success">Verified</Badge>}
+            {testResult?.status === "error" && <Badge tone="danger" title={testResult.message}>Test failed</Badge>}
+            {testResult?.status === "testing" && <Badge tone="neutral">Testing…</Badge>}
           </div>
-          {testResult?.status === "error" && testResult.message && (
-            <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
-              <div className="min-w-0">
-                <p className="text-[11px] font-medium text-red-700 dark:text-red-300">Connection failed</p>
-                <p className="mt-0.5 break-words text-[11px] leading-relaxed text-red-600/90 dark:text-red-400/90">
-                  {testResult.message}
-                </p>
-              </div>
-            </div>
+        </div>
+
+        <div className="order-3 flex w-full items-center gap-2 pl-6 lg:order-none lg:w-auto lg:pl-0">
+          <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]" title="Routing priority">
+            <button
+              type="button"
+              onClick={onMoveUp}
+              disabled={index === 0}
+              className="flex h-9 w-8 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
+              aria-label="Move account up"
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </button>
+            <input
+              type="number"
+              value={localPriority}
+              onChange={(event) => {
+                const value = parseInt(event.target.value, 10);
+                if (!isNaN(value) && value >= 0) setLocalPriority(value);
+              }}
+              onBlur={commitPriority}
+              onKeyDown={(event) => event.key === "Enter" && (event.target as HTMLInputElement).blur()}
+              aria-label={`Priority for ${a.label || a.provider}`}
+              className="h-9 w-10 border-x border-[var(--border)] bg-transparent text-center text-xs font-semibold text-[var(--text)] focus:bg-[var(--bg)] focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              min={0}
+              max={999}
+            />
+            <button
+              type="button"
+              onClick={onMoveDown}
+              disabled={index === total - 1}
+              className="flex h-9 w-8 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
+              aria-label="Move account down"
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          <select
+            value={a.proxy_pool_id || ""}
+            onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
+            aria-label={`Proxy for ${a.label || a.provider}`}
+            className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 lg:w-40 lg:flex-none"
+          >
+            <option value="">Direct connection</option>
+            {pools.map((pool) => (
+              <option key={pool.id} value={pool.id}>
+                {pool.name}{!pool.is_active ? " (inactive)" : ""}
+              </option>
+            ))}
+          </select>
+          {boundPool && (
+            <span className="hidden xl:inline-flex">
+              <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
+                {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
+              </Badge>
+            </span>
           )}
         </div>
+
         <div className="flex shrink-0 items-center gap-0.5">
-          <button onClick={onTest} disabled={testing || disabledByBatch}
-            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] disabled:opacity-40" title="Test credentials">
-            <CheckCircle className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
+          <button
+            type="button"
+            onClick={onTest}
+            disabled={testing || disabledByBatch}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Test account connection"
+            aria-label={`Test ${a.label || a.provider}`}
+          >
+            {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
           </button>
-          <button onClick={() => onUpdateProxy({ disabled: !a.disabled })}
-            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
-            title={a.disabled ? "Enable" : "Disable"}>
-            {a.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-500 dark:text-emerald-400" />}
+          <button
+            type="button"
+            onClick={() => onUpdateProxy({ disabled: !a.disabled })}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+            title={a.disabled ? "Enable account" : "Disable account"}
+            aria-label={a.disabled ? `Enable ${a.label || a.provider}` : `Disable ${a.label || a.provider}`}
+          >
+            {a.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-600" />}
           </button>
-          <button onClick={onDelete}
-            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500" title="Delete">
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-danger)]/40"
+            title="Delete account"
+            aria-label={`Delete ${a.label || a.provider}`}
+          >
             <Trash2 className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {/* Settings row: Priority + Proxy Pool */}
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        {/* Priority */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-[var(--text-muted)]">Priority:</span>
-          <div className="inline-flex items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-subtle)]">
-            <button onClick={onMoveUp} disabled={index === 0}
-              className="flex h-6 w-6 items-center justify-center text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
-              <ArrowUp className="h-3 w-3" />
-            </button>
-            <input
-              type="number"
-              value={localPriority}
-              onChange={(e) => {
-                const val = parseInt(e.target.value, 10);
-                if (!isNaN(val) && val >= 0) setLocalPriority(val);
-              }}
-              onBlur={commitPriority}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-              className="h-6 w-10 border-x border-[var(--border)] bg-transparent text-center text-xs font-medium text-[var(--text)] focus:outline-none focus:bg-[var(--bg)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              min={0}
-              max={999}
-            />
-            <button onClick={onMoveDown} disabled={index === total - 1}
-              className="flex h-6 w-6 items-center justify-center text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
-              <ArrowDown className="h-3 w-3" />
-            </button>
-          </div>
-        </div>
-
-        {/* Proxy Pool */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-[var(--text-muted)]">Proxy:</span>
-          <select
-            value={a.proxy_pool_id || ""}
-            onChange={(e) => onUpdateProxy({ proxy_pool_id: e.target.value || "" })}
-            className="h-6 rounded-md border border-[var(--border)] bg-[var(--bg-subtle)] pl-1.5 pr-6 text-xs focus:border-accent-500 focus:outline-none"
-          >
-            <option value="">Direct (no proxy)</option>
-            {pools.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}{!p.is_active ? " (inactive)" : ""}
-              </option>
-            ))}
-          </select>
-          {boundPool && (
-            <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-              boundPool.test_status === "active"
-                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-                : boundPool.test_status === "error"
-                  ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                  : "bg-[var(--bg-subtle)] text-[var(--text-muted)]"
-            }`}>
-              {boundPool.test_status === "active" ? "✓" : boundPool.test_status === "error" ? "✗" : "?"}
-              {boundPool.type !== "http" && ` ${boundPool.type}`}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Quota / credit info */}
-      {hasQuota && quotaData && (
-        <div className="mt-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2.5">
-          <div className="mb-2 flex items-center gap-2">
-            <Zap className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-            <span className="text-xs font-medium">
-              {quotaData.plan_name ? `${quotaData.plan_name} — Credits` : "Credits & Quota"}
-            </span>
-          </div>
-          {quotaData.upstream_quotas && (
-            <div className="space-y-2">
-              {quotaData.upstream_quotas.map((q) => (
-                <QuotaBarInline key={q.resource_type} quota={q} />
-              ))}
-            </div>
-          )}
+      {testResult?.status === "error" && testResult.message && (
+        <div className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
+          <p className="break-words text-xs leading-5 text-red-700 dark:text-red-300">{testResult.message}</p>
         </div>
       )}
-      
-      {/* Codex reset credits */}
-      {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
+
+      {hasExpandableDetails && (
+        <button
+          type="button"
+          onClick={() => setDetailsOpen((open) => !open)}
+          aria-expanded={detailsOpen}
+          className="ml-6 mt-1 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+        >
+          <Zap className="h-3.5 w-3.5" />
+          {quotaData?.plan_name || "Usage and quota"}
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${detailsOpen ? "rotate-180" : ""}`} />
+        </button>
+      )}
+
+      {detailsOpen && (
+        <div className="ml-6 mt-2 space-y-2">
+          {hasQuota && quotaData && (
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2.5">
+              {quotaData.upstream_quotas && (
+                <div className="space-y-2">
+                  {quotaData.upstream_quotas.map((quota) => (
+                    <QuotaBarInline key={quota.resource_type} quota={quota} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -2489,57 +2534,67 @@ function ModelCell({
   };
 
   return (
-    <div className={`group relative flex flex-col justify-between bg-[var(--bg-elevated)] p-4 transition-all hover:bg-[var(--bg-subtle)] ${disabled ? "opacity-50 grayscale" : ""} ${selected ? "ring-1 ring-inset ring-accent-500/60" : ""}`}>
-      <div className="mb-3 flex items-start justify-between">
-        <div className="flex items-center gap-2">
+    <article
+      className={`group relative flex min-h-44 flex-col rounded-xl border bg-[var(--bg-elevated)] p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)] ${
+        disabled ? "border-[var(--border)] opacity-70" : "border-[var(--border)]"
+      } ${selected ? "border-accent-400 ring-2 ring-accent-400/20" : ""}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
           {onToggleSelect && (
             <input
               type="checkbox"
-              className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+              className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
               checked={!!selected}
               onChange={onToggleSelect}
-              title="Select model"
+              aria-label={`Select ${model.name || model.id}`}
             />
           )}
-          <div className={`h-1.5 w-1.5 rounded-full ${disabled ? "bg-ink-400 dark:bg-ink-600" : "bg-accent-500 shadow-[0_0_8px_var(--color-accent-500)]"}`} />
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            {model.kind || "Model"}
-          </span>
+          <Badge tone={disabled ? "neutral" : "success"}>
+            {disabled ? "Disabled" : "Enabled"}
+          </Badge>
         </div>
-        <div className="flex items-center gap-0.5">
+        <Badge tone="neutral">{model.kind || "Model"}</Badge>
+      </div>
+
+      <div className="mt-5 min-w-0 flex-1">
+        <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>
+          {model.name || model.id}
+        </h3>
+        <code
+          className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]"
+          title={fullModel}
+        >
+          {fullModel}
+        </code>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-3">
+        <span className="text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
+        <div className="flex items-center gap-1">
           {onToggleDisable && (
             <button
+              type="button"
               onClick={onToggleDisable}
-              className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
               title={disabled ? "Enable model" : "Disable model"}
+              aria-label={disabled ? `Enable ${model.name || model.id}` : `Disable ${model.name || model.id}`}
             >
-              {disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-accent-500" />}
+              {disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-600" />}
             </button>
           )}
           <button
+            type="button"
             onClick={handleCopy}
-            className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] opacity-100 transition-all hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 sm:opacity-0 sm:group-hover:opacity-100"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
             title="Copy model path"
+            aria-label={`Copy model path ${fullModel}`}
           >
-            {copied ? (
-              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
-            )}
+            {copied ? <CheckCircle className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
           </button>
         </div>
       </div>
-      <div>
-        <code className="block truncate font-mono text-xs text-[var(--text)] tracking-tight" title={fullModel}>
-          {fullModel}
-        </code>
-        {model.name && model.name !== model.id && (
-          <span className="mt-1 block truncate text-[10px] text-[var(--text-muted)]" title={model.name}>
-            {model.name}
-          </span>
-        )}
-      </div>
-    </div>
+    </article>
   );
 }
 

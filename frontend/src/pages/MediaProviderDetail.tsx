@@ -151,31 +151,48 @@ export function MediaProviderDetailPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <Link to={`/media/${kind}`} className="mb-3 flex items-center gap-1 text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
-          <ArrowLeft className="h-4 w-4" /> Back to {meta.label}
-        </Link>
-        <div className="flex items-center gap-3">
-          <ProviderIcon provider={provider} />
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold">{provider.display_name}</h1>
-              <Badge tone="accent">{meta.label}</Badge>
-              {!provider.drivable && <Badge tone="neutral">Coming soon</Badge>}
+      <div className="space-y-4">
+        <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+          <Link
+            to={`/media/${kind}`}
+            className="inline-flex min-h-9 items-center gap-2 rounded-lg px-1 font-medium transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {meta.label}
+          </Link>
+          <span aria-hidden="true" className="text-[var(--border-strong)]">/</span>
+          <span className="truncate text-[var(--text)]">{provider.display_name}</span>
+        </nav>
+        <Card>
+          <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2 shadow-sm">
+                <ProviderIcon provider={provider} />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="font-display text-2xl font-semibold tracking-tight">{provider.display_name}</h1>
+                  <Badge tone="accent">{meta.label}</Badge>
+                  <Badge tone={provider.drivable ? "success" : "neutral"}>{provider.drivable ? "Available" : "Coming soon"}</Badge>
+                </div>
+                <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                  {myAccounts.length} connected {myAccounts.length === 1 ? "account" : "accounts"} · {models.data?.models.length ?? 0} models
+                </p>
+                <code className="mt-1 block font-mono text-xs text-[var(--text-muted)]">{provider.id}</code>
+              </div>
             </div>
-            <p className="font-mono text-xs text-[var(--text-muted)]">{provider.id}</p>
+            {provider.api_key_url && (
+              <a
+                href={provider.api_key_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3.5 py-2 text-sm font-semibold shadow-sm transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+              >
+                Get API key <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
           </div>
-          {provider.api_key_url && (
-            <a
-              href={provider.api_key_url}
-              target="_blank"
-              rel="noopener"
-              className="ml-auto flex items-center gap-1 text-xs text-accent-500 hover:underline"
-            >
-              Get API Key <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </div>
+        </Card>
       </div>
 
       {/* Accounts */}
@@ -262,15 +279,16 @@ export function MediaProviderDetailPage() {
       {/* Models */}
       {kind !== "search" && kind !== "fetch" && models.data?.models && models.data.models.length > 0 && (
         <Card>
-          <CardHeader title="Available Models" description={`${models.data.models.length} models`} />
-          <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3 sm:flex-row sm:items-center">
-            <div className="relative w-full max-w-sm">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+          <CardHeader title="Model catalog" description={`${models.data.models.length} models available for ${meta.label.toLowerCase()}.`} />
+          <div className="border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-4 sm:px-6">
+            <div className="relative w-full sm:max-w-md">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
               <Input
-                placeholder="Search models..."
+                aria-label="Search media models"
+                placeholder="Search models…"
                 value={modelSearchQuery}
-                onChange={(e) => setModelSearchQuery(e.target.value)}
-                className="pl-9 h-8 text-sm"
+                onChange={(event) => setModelSearchQuery(event.target.value)}
+                className="pl-10"
               />
             </div>
           </div>
@@ -279,14 +297,13 @@ export function MediaProviderDetailPage() {
               No models found matching "{modelSearchQuery}"
             </div>
           ) : (
-            <div className={`grid grid-cols-1 gap-px overflow-hidden border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 md:grid-cols-3 ${totalModelPages <= 1 ? "rounded-b-2xl" : ""}`}>
-              {paginatedModels.map((m) => (
-                <div key={m.id} className="flex flex-col justify-center gap-1 bg-[var(--bg-elevated)] px-4 py-2.5 transition-colors hover:bg-[var(--bg-subtle)]">
-                  <span className="font-mono text-xs truncate" title={m.id}>{m.id}</span>
-                  {m.name && m.name !== m.id && (
-                    <span className="text-[10px] text-[var(--text-muted)] truncate" title={m.name}>{m.name}</span>
-                  )}
-                </div>
+            <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 lg:grid-cols-3">
+              {paginatedModels.map((model) => (
+                <article key={model.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)]">
+                  <Badge tone="success">Available</Badge>
+                  <h3 className="mt-3 truncate text-sm font-semibold" title={model.name || model.id}>{model.name || model.id}</h3>
+                  <code className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]" title={model.id}>{model.id}</code>
+                </article>
               ))}
             </div>
           )}

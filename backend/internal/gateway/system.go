@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -41,10 +42,10 @@ type SystemSample struct {
 	IsMemSpike  bool    `json:"mem_spike,omitempty"`
 
 	// Process-level metrics (keirouter's own resource usage).
-	ProcCPUPct   float64 `json:"proc_cpu_pct,omitempty"`
-	ProcRSSMB    float64 `json:"proc_rss_mb,omitempty"`
-	ProcThreads  int32   `json:"proc_threads,omitempty"`
-	ProcOpenFDs  int32   `json:"proc_open_fds,omitempty"`
+	ProcCPUPct  float64 `json:"proc_cpu_pct,omitempty"`
+	ProcRSSMB   float64 `json:"proc_rss_mb,omitempty"`
+	ProcThreads int32   `json:"proc_threads,omitempty"`
+	ProcOpenFDs int32   `json:"proc_open_fds,omitempty"`
 }
 
 // SystemSnapshot is the detailed real-time payload for the current moment.
@@ -89,10 +90,10 @@ type SystemSnapshot struct {
 	NetConns int `json:"net_conns"`
 
 	// Process-level metrics (keirouter's own resource usage).
-	ProcCPUPct   float64 `json:"proc_cpu_pct"`
-	ProcRSSMB    float64 `json:"proc_rss_mb"`
-	ProcThreads  int32   `json:"proc_threads"`
-	ProcOpenFDs  int32   `json:"proc_open_fds"`
+	ProcCPUPct  float64 `json:"proc_cpu_pct"`
+	ProcRSSMB   float64 `json:"proc_rss_mb"`
+	ProcThreads int32   `json:"proc_threads"`
+	ProcOpenFDs int32   `json:"proc_open_fds"`
 }
 
 // systemHistory holds a circular buffer of samples.
@@ -162,11 +163,15 @@ func startSystemCollector(resRepo *store.ResourceRepo) {
 				case <-ticker.C:
 					s := collectResourceSample()
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					_ = resRepo.InsertResourceSample(ctx, s)
+					if err := resRepo.InsertResourceSample(ctx, s); err != nil {
+						slog.Default().Warn("resource sample persistence failed", "err", err)
+					}
 					cancel()
 				case <-pruneTicker.C:
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					_ = resRepo.PruneResourceSamples(ctx, resourceRetention)
+					if err := resRepo.PruneResourceSamples(ctx, resourceRetention); err != nil {
+						slog.Default().Warn("resource sample pruning failed", "err", err)
+					}
 					cancel()
 				}
 			}
@@ -327,10 +332,10 @@ func (s *Server) adminSystemResourceHistory(w http.ResponseWriter, r *http.Reque
 // adminSystemHistory returns the historical ring buffer of samples.
 func (s *Server) adminSystemHistory(w http.ResponseWriter, r *http.Request) {
 	type response struct {
-		Interval int             `json:"interval_sec"`
-		MaxSize  int             `json:"max_size"`
-		Spikes   []SystemSample  `json:"spikes"`
-		Samples  []SystemSample  `json:"samples"`
+		Interval int            `json:"interval_sec"`
+		MaxSize  int            `json:"max_size"`
+		Spikes   []SystemSample `json:"spikes"`
+		Samples  []SystemSample `json:"samples"`
 	}
 	samples := sysHistory.samples()
 

@@ -92,6 +92,13 @@ func kiroModelPrices() []ModelPrice {
 		{"claude-opus-4.8", opusIn, opusOut, opusCached, opusWrite, 0},
 		// Claude Haiku family.
 		{"claude-haiku-4.5", 0.8, 4.0, 0.08, 1.0, 0},
+		// GPT 5.6 family (Sol/Terra/Luna). Subscription-priced upstream; these
+		// are retail-equivalent estimates scaled off the GPT-5 rate (2.5 in /
+		// 10 out) by each tier's relative cost, with the standard 50% cache-read
+		// discount and cache-write charged at the standard input rate.
+		{"gpt-5.6-sol", 6.0, 24.0, 3.0, 6.0, 0},
+		{"gpt-5.6-terra", 3.0, 12.0, 1.5, 3.0, 0},
+		{"gpt-5.6-luna", 1.5, 6.0, 0.75, 1.5, 0},
 		// Non-Claude models exposed by Kiro (estimated from underlying provider).
 		{"deepseek-3.2", 0.27, 1.1, 0.07, 0.27, 0},
 		{"glm-5", 0.6, 2.2, 0, 0, 0},

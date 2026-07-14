@@ -1,0 +1,85 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/mydisha/keirouter/backend/internal/config"
+)
+
+// TestPostgresCompatibility exercises behavior that differs materially from
+// SQLite. It runs only when CI or a developer provides a disposable test DSN.
+func TestPostgresCompatibility(t *testing.T) {
+	dsn := os.Getenv("KEIROUTER_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("KEIROUTER_TEST_POSTGRES_DSN is not set")
+	}
+
+	ctx := context.Background()
+	db, err := Open(ctx, config.DatabaseConfig{
+		Driver:          "postgres",
+		DSN:             dsn,
+		MaxOpenConns:    8,
+		MaxIdleConns:    4,
+		ConnMaxLifetime: time.Minute,
+		ConnMaxIdleTime: time.Minute,
+	}, t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	require.NoError(t, db.Migrate(ctx))
+	require.NoError(t, db.Migrate(ctx), "migrations must be idempotent")
+	require.NoError(t, db.Tenants().EnsureDefault(ctx))
+
+	t.Run("resource samples accept production-sized counters", func(t *testing.T) {
+		now := time.Now().UTC()
+		require.NoError(t, db.Resources().InsertResourceSample(ctx, ResourceSample{
+			TenantID: DefaultTenantID, CreatedAt: now,
+			Goroutines: 128, HeapAllocBytes: 4 << 30, HeapSysBytes: 6 << 30,
+			GCPauseNS: 3_000_000_000, NextGCBytes: 8 << 30, NumGC: 3_000_000_000,
+			ProcCPUPercent: 12.5, ProcRSSBytes: 5 << 30, ProcThreads: 32,
+			HostCPUPercent: 45.5, HostMemUsedBytes: 12 << 30, HostMemTotalBytes: 16 << 30,
+			HostDiskUsedBytes: 2 << 40, HostDiskTotalBytes: 4 << 40,
+			HostNetSentBytes: 6 << 30, HostNetRecvBytes: 7 << 30,
+			InflightRequests: 24,
+		}))
+	})
+
+	t.Run("large usage batches stay below bind limits", func(t *testing.T) {
+		now := time.Now().UTC()
+		records := make([]UsageRecord, 2500)
+		prefix := fmt.Sprintf("pg-it-%d", now.UnixNano())
+		for i := range records {
+			records[i] = UsageRecord{
+				ID: fmt.Sprintf("%s-%d", prefix, i), TenantID: DefaultTenantID,
+				Provider: "integration", Model: "postgres", Client: "test", CreatedAt: now,
+			}
+		}
+		require.NoError(t, db.Usage().RecordBatch(ctx, records))
+		var count int
+		require.NoError(t, db.sql.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM usage_records WHERE id LIKE $1", prefix+"-%").Scan(&count))
+		require.Equal(t, len(records), count)
+	})
+
+	t.Run("calendar grouping is UTC", func(t *testing.T) {
+		_, err := db.sql.ExecContext(ctx, "SET TIME ZONE 'America/Los_Angeles'")
+		require.NoError(t, err)
+		q := db.rebind("SELECT " + db.dateExpr("?"))
+		var day string
+		require.NoError(t, db.sql.QueryRowContext(ctx, q, "2026-01-01T00:30:00Z").Scan(&day))
+		require.Equal(t, "2026-01-01", day)
+	})
+
+	t.Run("duplicate column recovery restores transaction", func(t *testing.T) {
+		_, err := db.sql.ExecContext(ctx,
+			"DELETE FROM schema_migrations WHERE version = '0022_headroom_ponytail_savings'")
+		require.NoError(t, err)
+		require.NoError(t, db.Migrate(ctx))
+	})
+}

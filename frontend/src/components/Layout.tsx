@@ -227,7 +227,7 @@ export function Layout() {
         <RouteProgress />
         <TopBar onMenuToggle={() => setSidebarOpen((v) => !v)} onSearchOpen={() => setPaletteOpen(true)} />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-6xl px-4 py-4 sm:px-8 sm:py-6">
+          <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
             <Suspense fallback={<PageOutletFallback />}>
               <Outlet />
             </Suspense>
@@ -336,7 +336,7 @@ function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSe
   const { branding } = useBranding();
   return (
     <header className="flex h-16 shrink-0 items-center justify-center border-b border-[var(--border)] bg-[var(--bg-elevated)]">
-      <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 sm:px-8">
+      <div className="mx-auto flex w-full max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-8">
       {/* Hamburger — visible on mobile only. */}
       <button
         onClick={onMenuToggle}
@@ -451,7 +451,7 @@ function ProfileMenu() {
 export function PageHeader({
   title,
   description,
-  icon: _Icon,
+  icon: Icon,
   action,
 }: {
   title: string;
@@ -460,12 +460,19 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-      <div className="min-w-0">
-        <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
-        {description && <p className="mt-1 text-sm text-[var(--text-muted)]">{description}</p>}
+    <div className="mb-7 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex min-w-0 items-start gap-3.5">
+        {Icon && (
+          <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-accent-200 bg-accent-100 text-accent-700 shadow-sm dark:border-accent-800 dark:bg-accent-900/40 dark:text-accent-300">
+            <Icon className="h-5 w-5" strokeWidth={2} />
+          </div>
+        )}
+        <div className="min-w-0">
+          <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+          {description && <p className="mt-1.5 max-w-3xl text-sm leading-6 text-[var(--text-muted)]">{description}</p>}
+        </div>
       </div>
-      {action && <div className="shrink-0">{action}</div>}
+      {action && <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div>}
     </div>
   );
 }

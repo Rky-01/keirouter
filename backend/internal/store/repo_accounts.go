@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -74,6 +75,41 @@ func (r *AccountRepo) ListByProvider(ctx context.Context, tenantID, provider str
 		WHERE tenant_id = ? AND provider = ? AND disabled = 0
 		ORDER BY priority ASC, created_at ASC`)
 	return r.queryList(ctx, q, tenantID, provider)
+}
+
+// ListByProviders returns enabled accounts for multiple providers in one query.
+// Providers are de-duplicated before building the IN clause so fallback chains
+// with several models on the same provider do not add redundant placeholders.
+func (r *AccountRepo) ListByProviders(ctx context.Context, tenantID string, providers []string) ([]Account, error) {
+	unique := make([]string, 0, len(providers))
+	seen := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		if provider == "" {
+			continue
+		}
+		if _, ok := seen[provider]; ok {
+			continue
+		}
+		seen[provider] = struct{}{}
+		unique = append(unique, provider)
+	}
+	if len(unique) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(unique))
+	args := make([]any, 0, len(unique)+1)
+	args = append(args, tenantID)
+	for i, provider := range unique {
+		placeholders[i] = "?"
+		args = append(args, provider)
+	}
+
+	q := r.db.rebind(`SELECT ` + accountColumns + `
+		FROM accounts
+		WHERE tenant_id = ? AND provider IN (` + strings.Join(placeholders, ", ") + `) AND disabled = 0
+		ORDER BY provider ASC, priority ASC, created_at ASC`)
+	return r.queryList(ctx, q, args...)
 }
 
 // ListByTenant returns all accounts for a tenant.

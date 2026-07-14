@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -298,11 +299,11 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			}
 			streamReq := cloneForAttempt(req, attempt.Target.Model)
 			stream, sErr := attempt.Conn.Stream(streamCtx, streamReq, attempt.Creds, core.StreamConfig{})
-			if streamCancel != nil {
-				streamCancel()
-			}
 			if sErr == nil {
 				sResp, drainErr := drainStream(stream, req.Model)
+				if streamCancel != nil {
+					streamCancel()
+				}
 				if drainErr == nil {
 					callErr = nil
 					resp = sResp
@@ -311,6 +312,9 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 					callErr = drainErr
 				}
 			} else {
+				if streamCancel != nil {
+					streamCancel()
+				}
 				callErr = sErr
 			}
 		}
@@ -390,10 +394,10 @@ type StreamResult struct {
 	// streaming. When set, Chunks is nil — the two paths are mutually exclusive.
 	DirectBody io.ReadCloser
 
-	// DirectUsageFunc, when non-nil, must be called after the DirectBody stream
-	// is fully consumed (after io.Copy completes). It parses the captured SSE
-	// data for usage tokens and records them in the meter.
-	DirectUsageFunc func()
+	// DirectCompleteFunc, when non-nil, must be called exactly once after the
+	// DirectBody stream terminates. A nil error records successful usage; a
+	// provider/stall error updates cooldown and failure telemetry instead.
+	DirectCompleteFunc func(error)
 }
 
 // maxRateLimitRetries is how many times the pipeline will re-plan and retry
@@ -537,7 +541,10 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			},
 		}
 
-		callCtx := core.WithProxy(ctx, attempt.Creds)
+		// The successful stream owns this cancellation function. pumpStream or
+		// the direct response body cancels it on completion, client disconnect,
+		// policy block, or stall so connector goroutines cannot leak.
+		callCtx, cancelUpstream := context.WithCancel(core.WithProxy(ctx, attempt.Creds))
 
 		// Zero-copy fast path: when the client dialect matches the upstream
 		// dialect, no tools are present (so no argument sanitization needed),
@@ -561,26 +568,26 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
 				if rawErr != nil {
-
-				pe := core.AsProviderError(rawErr)
-				lastErr = pe
-				p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
-				if p.metrics != nil {
-					p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
-				}
-				p.recordFailureTelemetry(req.Metadata, attempt, pe, time.Since(started), pe.Fallbackable())
-				if !pe.Fallbackable() {
-					release(0)
-					p.budgetRelease(scope)
-					return nil, pe, true
-				}
-			if p.metrics != nil {
-				p.metrics.RecordFallback(string(pe.Kind))
-			}
-			fellBack = true
-			p.log.Warn("direct stream attempt failed, falling back",
-				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
-			continue
+					cancelUpstream()
+					pe := core.AsProviderError(rawErr)
+					lastErr = pe
+					p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
+					if p.metrics != nil {
+						p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
+					}
+					p.recordFailureTelemetry(req.Metadata, attempt, pe, time.Since(started), pe.Fallbackable())
+					if !pe.Fallbackable() {
+						release(0)
+						p.budgetRelease(scope)
+						return nil, pe, true
+					}
+					if p.metrics != nil {
+						p.metrics.RecordFallback(string(pe.Kind))
+					}
+					fellBack = true
+					p.log.Warn("direct stream attempt failed, falling back",
+						"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+					continue
 				}
 				p.log.Debug("direct stream connected (zero-copy)", "provider", attempt.Target.Provider,
 					"model", attempt.Target.Model)
@@ -595,24 +602,46 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 					started: started,
 					onFirst: streamCfg.OnFirstChunk,
 				}
-				wrapped := &teeReadCloser{r: body, w: io.MultiWriter(&capture, firstByte)}
+				streamBody := newStallReadCloser(
+					body,
+					p.resolvedStallTimeout(),
+					cancelUpstream,
+					attempt.Target.Provider,
+					attempt.Target.Model,
+				)
+				wrapped := &teeReadCloser{r: streamBody, w: io.MultiWriter(&capture, firstByte)}
 				meta := req.Metadata
 				acc := attempt
 				saveCopy := save
 				budgetScope := scope
-				usageFunc := func() {
-					defer release(0)
-					usage := extractUsageFromStream(capture.Bytes())
-					totalLatency := time.Since(started)
-					cost := p.recordWithTTFT(ctx, meta, acc, usage, false, totalLatency, ttft, saveCopy, fellBack)
-					p.budgetConfirm(budgetScope, cost)
+				var completeOnce sync.Once
+				completeFunc := func(streamErr error) {
+					completeOnce.Do(func() {
+						defer release(0)
+						recordCtx := context.WithoutCancel(ctx)
+						if errors.Is(streamErr, context.Canceled) {
+							p.budgetRelease(budgetScope)
+							return
+						}
+						if streamErr != nil {
+							pe := p.recordTerminalStreamFailure(recordCtx, meta, acc, streamErr, started, fellBack, budgetScope)
+							p.log.Warn("direct stream terminated with upstream error",
+								"provider", acc.Target.Provider, "model", acc.Target.Model, "kind", pe.Kind)
+							return
+						}
+
+						totalLatency := time.Since(started)
+						usage := extractUsageFromStream(capture.Bytes())
+						cost := p.recordWithTTFT(recordCtx, meta, acc, usage, false, totalLatency, ttft, saveCopy, fellBack)
+						p.budgetConfirm(budgetScope, cost)
+					})
 				}
 				return &StreamResult{
-					DirectBody:      wrapped,
-					Provider:        attempt.Target.Provider,
-					Model:           attempt.Target.Model,
-					AccountID:       attempt.Account.ID,
-					DirectUsageFunc: usageFunc,
+					DirectBody:         wrapped,
+					Provider:           attempt.Target.Provider,
+					Model:              attempt.Target.Model,
+					AccountID:          attempt.Account.ID,
+					DirectCompleteFunc: completeFunc,
 				}, nil, false
 			}
 		}
@@ -621,6 +650,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		// then render back to the client's dialect.
 		upstream, callErr := attempt.Conn.Stream(callCtx, attemptReq, attempt.Creds, streamCfg)
 		if callErr != nil {
+			cancelUpstream()
 			pe := core.AsProviderError(callErr)
 			lastErr = pe
 			p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
@@ -634,13 +664,13 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 				p.budgetRelease(scope)
 				return nil, pe, true
 			}
-		if p.metrics != nil {
-			p.metrics.RecordFallback(string(pe.Kind))
-		}
-		fellBack = true
-		p.log.Warn("stream attempt failed, falling back",
-			"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
-		continue
+			if p.metrics != nil {
+				p.metrics.RecordFallback(string(pe.Kind))
+			}
+			fellBack = true
+			p.log.Warn("stream attempt failed, falling back",
+				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+			continue
 		}
 
 		p.log.Debug("stream connected", "provider", attempt.Target.Provider,
@@ -652,7 +682,7 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		out := make(chan core.StreamChunk, 16)
 		meta := req.Metadata
 		acc := attempt
-		go p.pumpStream(ctx, req, upstream, out, meta, acc, started, &ttft, save, scope, release, fellBack)
+		go p.pumpStream(ctx, req, upstream, out, meta, acc, started, &ttft, save, scope, release, fellBack, cancelUpstream)
 
 		return &StreamResult{
 			Chunks:    out,
@@ -685,41 +715,34 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 // tail before forwarding; on a Block decision the stream is cancelled and an
 // error chunk is delivered to the client.
 func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-chan core.StreamChunk, out chan<- core.StreamChunk,
-	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time, ttft *time.Duration, save *saveState, scope budget.Scope, release limits.ReleaseFunc, fellBack bool) {
+	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time, ttft *time.Duration, save *saveState, scope budget.Scope, release limits.ReleaseFunc, fellBack bool, cancelUpstream context.CancelFunc) {
 	defer close(out)
 	defer release(0)
+	defer cancelUpstream()
 
 	// Resolve effective stall timeout (dynamic from dashboard or static config).
 	stallTimeout := p.resolvedStallTimeout()
 
-	// Set up stall detection. The timer resets every time a chunk arrives.
-	var stallCancel context.CancelFunc
-	stallCtx := ctx
-	if stallTimeout > 0 {
-		stallCtx, stallCancel = context.WithCancel(ctx)
-		defer stallCancel()
-		// Drain upstream when stall fires.
-		go func() {
-			<-stallCtx.Done()
-			if ctx.Err() == nil && stallCtx.Err() != nil {
-				// Stall detected (parent ctx still alive but stall ctx cancelled).
-				// Consume remaining upstream chunks to unblock the producer.
-				for range in {
-				}
-			}
-		}()
-	}
-
+	// A single timer channel is selected by the same goroutine that owns
+	// terminal accounting. This avoids cancellation/stall races and guarantees
+	// every exit settles the budget exactly once.
 	var stallTimer *time.Timer
+	var stallC <-chan time.Time
+	if stallTimeout > 0 {
+		stallTimer = time.NewTimer(stallTimeout)
+		stallC = stallTimer.C
+	}
 	resetStall := func() {
-		if stallTimeout <= 0 {
+		if stallTimer == nil {
 			return
 		}
-		if stallTimer == nil {
-			stallTimer = time.AfterFunc(stallTimeout, stallCancel)
-		} else {
-			stallTimer.Reset(stallTimeout)
+		if !stallTimer.Stop() {
+			select {
+			case <-stallTimer.C:
+			default:
+			}
 		}
+		stallTimer.Reset(stallTimeout)
 	}
 	stopStall := func() {
 		if stallTimer != nil {
@@ -728,7 +751,26 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 	}
 	defer stopStall()
 
-	resetStall() // arm the timer for the initial connection
+	settleClientCancellation := func() {
+		cancelUpstream()
+		p.budgetRelease(scope)
+	}
+	settleStall := func() {
+		if ctx.Err() != nil {
+			settleClientCancellation()
+			return
+		}
+		cancelUpstream()
+		stallErr := &core.ProviderError{
+			Kind: core.ErrTimeout, Provider: attempt.Target.Provider, Model: attempt.Target.Model,
+			Message: "stream stall: no data received for " + stallTimeout.String(),
+		}
+		pe := p.recordTerminalStreamFailure(ctx, meta, attempt, stallErr, started, fellBack, scope)
+		select {
+		case out <- core.StreamChunk{Type: core.ChunkError, Err: pe}:
+		case <-ctx.Done():
+		}
+	}
 
 	// Sliding window for outbound guardrails. We buffer the tail of the
 	// assistant's text output and ask the engine to scan it every
@@ -751,19 +793,26 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 		select {
 		case chunk, ok := <-in:
 			if !ok {
+				if ctx.Err() != nil {
+					settleClientCancellation()
+					return
+				}
+				stopStall()
 				// Upstream closed — stream complete.
-			// If the client opted into a usage event (stream_options.
-			// include_usage) but the provider never sent one, synthesize an
-			// estimate so the client still receives a final usage event.
-			// Mirrors the estimateUsage/addBufferToUsage behavior.
+				// If the client opted into a usage event (stream_options.
+				// include_usage) but the provider never sent one, synthesize an
+				// estimate so the client still receives a final usage event.
+				// Mirrors the estimateUsage/addBufferToUsage behavior.
 				if req.IncludeUsage && !sawUsage {
 					est := estimateStreamUsage(req, completionChars)
 					if est.TotalTokens > 0 {
 						select {
 						case out <- core.StreamChunk{Type: core.ChunkUsage, Usage: &est}:
-						case <-stallCtx.Done():
+							usage = est
+						case <-ctx.Done():
+							settleClientCancellation()
+							return
 						}
-						usage = est
 					}
 				}
 				// Record actual total upstream duration as latency; TTFT is
@@ -774,6 +823,23 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 				return
 			}
 			resetStall()
+			if chunk.Type == core.ChunkError {
+				if ctx.Err() != nil {
+					settleClientCancellation()
+					return
+				}
+				streamErr := chunk.Err
+				if streamErr == nil {
+					streamErr = &core.ProviderError{Kind: core.ErrUpstream, Message: "provider stream failed"}
+				}
+				pe := p.recordTerminalStreamFailure(ctx, meta, attempt, streamErr, started, fellBack, scope)
+				chunk.Err = pe
+				select {
+				case out <- chunk:
+				case <-ctx.Done():
+				}
+				return
+			}
 			switch chunk.Type {
 			case core.ChunkUsage:
 				if chunk.Usage != nil {
@@ -796,7 +862,8 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 					gres := p.guardrails.OutboundChunk(ctx, req, streamBuf.String())
 					if gres.Action == guardrails.ActionBlock {
 						p.log.Debug("guardrails blocked streaming output", "reason", gres.Reason)
-						out <- core.StreamChunk{
+						select {
+						case out <- core.StreamChunk{
 							Type: core.ChunkError,
 							Err: &core.ProviderError{
 								Kind:     core.ErrPolicyBlocked,
@@ -804,11 +871,14 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 								Model:    attempt.Target.Model,
 								Message:  gres.Reason,
 							},
+						}:
+						case <-ctx.Done():
+							settleClientCancellation()
+							return
 						}
-						for range in {
-						}
+						cancelUpstream()
 						totalLatency := time.Since(started)
-				cost := p.recordWithTTFT(ctx, meta, attempt, usage, false, totalLatency, *ttft, save, fellBack)
+						cost := p.recordWithTTFT(ctx, meta, attempt, usage, false, totalLatency, *ttft, save, fellBack)
 						p.budgetConfirm(scope, cost)
 						return
 					}
@@ -820,32 +890,18 @@ func (p *Pipeline) pumpStream(ctx context.Context, req *core.ChatRequest, in <-c
 
 			select {
 			case out <- chunk:
-			case <-stallCtx.Done():
-				// Client disconnected or stall — drain upstream.
-				for range in {
-				}
+			case <-ctx.Done():
+				settleClientCancellation()
+				return
+			case <-stallC:
+				settleStall()
 				return
 			}
-		case <-stallCtx.Done():
-			if ctx.Err() != nil {
-				// Parent context cancelled (client disconnected).
-				p.budgetRelease(scope)
-				for range in {
-				}
-				return
-			}
-			// Stall timeout fired.
-			stopStall()
-			out <- core.StreamChunk{
-				Type: core.ChunkError,
-				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: attempt.Target.Provider, Model: attempt.Target.Model, Message: "stream stall: no data received for " + stallTimeout.String()},
-			}
-			// Drain upstream.
-			for range in {
-			}
-			totalLatency := time.Since(started)
-			cost := p.recordWithTTFT(ctx, meta, attempt, usage, false, totalLatency, *ttft, save, fellBack)
-			p.budgetConfirm(scope, cost)
+		case <-ctx.Done():
+			settleClientCancellation()
+			return
+		case <-stallC:
+			settleStall()
 			return
 		}
 	}
@@ -1110,7 +1166,7 @@ func splitRuleNames(s string) []string {
 // flag mirrors opts.Ponytail.Enabled.
 func buildSaveState(stats *slimmer.Stats, hr *headroom.Stats, opts Options) *saveState {
 	save := &saveState{
-		slim:      opts.Slimmer.Enabled,
+		slim:     opts.Slimmer.Enabled,
 		caveman:  opts.Caveman.Enabled,
 		terse:    opts.Terse.Enabled,
 		ponytail: opts.Ponytail.Enabled,
@@ -1179,6 +1235,31 @@ func (p *Pipeline) recordSuccessTelemetry(meta core.RequestMetadata, attempt dis
 		FallbackTriggered: fellBack,
 	}
 	p.telemetry.Record(ev)
+}
+
+// recordTerminalStreamFailure updates routing cooldowns, metrics, health, and
+// budget state when an upstream fails after response headers were committed.
+// At that point fallback is no longer possible, so the attempt is also the
+// request's final failure.
+func (p *Pipeline) recordTerminalStreamFailure(ctx context.Context, meta core.RequestMetadata,
+	attempt dispatch.Attempt, streamErr error, started time.Time, fellBack bool, scope budget.Scope) *core.ProviderError {
+	pe := core.AsProviderError(streamErr)
+	peCopy := *pe
+	pe = &peCopy
+	if pe.Provider == "" {
+		pe.Provider = attempt.Target.Provider
+	}
+	if pe.Model == "" {
+		pe.Model = attempt.Target.Model
+	}
+	p.dispatcher.NoteFailure(context.WithoutCancel(ctx), attempt.Account.ID, pe)
+	if p.metrics != nil {
+		p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
+	}
+	p.recordFailureTelemetry(meta, attempt, pe, time.Since(started), false)
+	p.recordFinalFailureTelemetry(meta, pe, fellBack)
+	p.budgetRelease(scope)
+	return pe
 }
 
 // recordFailureTelemetry emits a best-effort health telemetry event for a
@@ -1544,6 +1625,88 @@ func (b *safeBuffer) Bytes() []byte {
 	out = append(out, b.head.Bytes()...)
 	out = append(out, tailBytes...)
 	return out
+}
+
+// stallReadCloser enforces the configured no-data timeout for direct streams.
+// Closing the body unblocks an in-flight Read while cancelling the connector
+// context terminates any producer goroutines owned by the connector.
+type stallReadCloser struct {
+	body     io.ReadCloser
+	cancel   context.CancelFunc
+	timeout  time.Duration
+	provider string
+	model    string
+
+	mu       sync.Mutex
+	timer    *time.Timer
+	closed   bool
+	timedOut bool
+}
+
+func newStallReadCloser(body io.ReadCloser, timeout time.Duration, cancel context.CancelFunc, provider, model string) io.ReadCloser {
+	s := &stallReadCloser{
+		body: body, cancel: cancel, timeout: timeout, provider: provider, model: model,
+	}
+	if timeout > 0 {
+		s.timer = time.AfterFunc(timeout, s.handleTimeout)
+	}
+	return s
+}
+
+func (s *stallReadCloser) handleTimeout() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.timedOut = true
+	s.mu.Unlock()
+
+	s.cancel()
+	_ = s.body.Close()
+}
+
+func (s *stallReadCloser) Read(p []byte) (int, error) {
+	n, err := s.body.Read(p)
+
+	s.mu.Lock()
+	if n > 0 && !s.closed && s.timer != nil {
+		s.timer.Reset(s.timeout)
+	}
+	timedOut := s.timedOut
+	if err != nil && !s.closed && s.timer != nil {
+		s.timer.Stop()
+	}
+	s.mu.Unlock()
+
+	if err != nil {
+		s.cancel()
+	}
+	if timedOut {
+		return n, &core.ProviderError{
+			Kind: core.ErrTimeout, Provider: s.provider, Model: s.model,
+			Message: "stream stall: no data received for " + s.timeout.String(), Cause: err,
+		}
+	}
+	return n, err
+}
+
+func (s *stallReadCloser) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		s.cancel()
+		return nil
+	}
+	s.closed = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.mu.Unlock()
+
+	s.cancel()
+	return s.body.Close()
 }
 
 // teeReadCloser wraps an io.ReadCloser with an io.TeeReader so that every Read

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Sparkles, AlertTriangle, Loader2, CheckCircle, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Sparkles, AlertTriangle, Loader2, CheckCircle, Search, Copy } from "lucide-react";
 
 import { api, type CustomModel, type CustomModelInput, type Provider } from "../lib/api";
 import { Card, CardHeader, Button, Input, Field, Select, Badge, Modal, EmptyState } from "./ui";
@@ -101,12 +101,12 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
   return (
     <Card>
       <CardHeader
-        title="Custom Models"
-        description="Models you register yourself, beyond the predefined catalog. Use Fetch from /models to import the upstream listing, or add entries manually."
+        title="Custom model registry"
+        description="Add fine-tunes and private upstream models that are not included in the provider catalog."
         action={
-          <Button variant="ghost" className="h-8 px-3 text-xs" onClick={openAdd}>
-            <Plus className="h-3.5 w-3.5" />
-            Add model
+          <Button variant="secondary" onClick={openAdd}>
+            <Plus className="h-4 w-4" />
+            Add custom model
           </Button>
         }
       />
@@ -114,25 +114,26 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
       {models.length === 0 ? (
         <div className="border-t border-[var(--border)] px-6 py-10">
           <EmptyState
-            title="No custom models yet"
-            hint="Add a model id (e.g. my-finetune-v1) to make it routable as ${alias}/<model>."
+            title="No custom models registered"
+            hint={`Add a model ID to route it as ${provider.alias || provider.id}/<model>.`}
           />
         </div>
       ) : (
         <>
-          {filteredModels.length > 0 && (
-            <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative w-full max-w-sm">
-                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+          {models.length > 0 && (
+            <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+              <div className="relative w-full sm:max-w-md">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
                 <Input
-                  placeholder="Search custom models..."
+                  aria-label="Search custom models"
+                  placeholder="Search custom models…"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 h-8 text-sm"
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="pl-10"
                 />
               </div>
-              <span className="text-xs text-[var(--text-muted)]">
-                {filteredModels.length} model{filteredModels.length === 1 ? "" : "s"}
+              <span className="text-sm text-[var(--text-muted)]">
+                {filteredModels.length} of {models.length} {models.length === 1 ? "model" : "models"}
               </span>
             </div>
           )}
@@ -141,7 +142,7 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
               No custom models found matching "{searchQuery}"
             </div>
           ) : (
-            <div className={`grid grid-cols-1 gap-px overflow-hidden border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-3 ${totalPages <= 1 ? "rounded-b-2xl" : ""}`}>
+            <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
               {paginatedModels.map((m) => (
                 <CustomModelCell
                   key={m.db_id}
@@ -264,66 +265,64 @@ function CustomModelCell({
   };
 
   return (
-    <div className="group relative flex flex-col justify-between bg-[var(--bg-elevated)] p-4 transition-all hover:bg-[var(--bg-subtle)]">
-      <div className="mb-3 flex items-start justify-between">
-        <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 items-center justify-center rounded-md bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
-            <Sparkles className="h-3.5 w-3.5" />
+    <article className="group flex min-h-44 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
+            <Sparkles className="h-4 w-4" />
           </div>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            {m.kind || "Model"}
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone="accent">Custom</Badge>
+            <Badge tone="neutral">{m.kind || "Model"}</Badge>
+          </div>
         </div>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={onEdit}
-            className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
             title="Edit model"
+            aria-label={`Edit ${m.name || m.id}`}
           >
-            <Pencil className="h-3.5 w-3.5" />
+            <Pencil className="h-4 w-4" />
           </button>
           <button
+            type="button"
             onClick={onDelete}
-            className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] transition-colors hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)]"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-danger)]/40"
             title="Remove model"
+            aria-label={`Remove ${m.name || m.id}`}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4" />
           </button>
         </div>
       </div>
-      <div>
-        <code className="block truncate font-mono text-xs text-[var(--text)] tracking-tight" title={fullModel}>
+
+      <div className="mt-5 min-w-0 flex-1">
+        <h3 className="truncate text-sm font-semibold" title={m.name || m.id}>{m.name || m.id}</h3>
+        <code className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]" title={fullModel}>
           {fullModel}
         </code>
-        {m.name && m.name !== m.id && (
-          <span className="mt-1 block truncate text-[10px] text-[var(--text-muted)]" title={m.name}>
-            {m.name}
-          </span>
-        )}
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <Badge tone="accent">custom</Badge>
-          {m.context_window > 0 && (
-            <span className="text-[10px] text-[var(--text-muted)]">{m.context_window.toLocaleString()} ctx</span>
-          )}
-          {(m.input_per_m > 0 || m.output_per_m > 0) && (
-            <span className="text-[10px] text-[var(--text-muted)]">
-              ${m.input_per_m}/${m.output_per_m}/M
-            </span>
-          )}
-          <button
-            onClick={handleCopy}
-            className="ml-auto flex h-6 w-6 items-center justify-center rounded text-[var(--text-muted)] opacity-0 transition-all hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 group-hover:opacity-100"
-            title="Copy model path"
-          >
-            {copied ? (
-              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
-            ) : (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
-            )}
-          </button>
-        </div>
       </div>
-    </div>
+
+      <div className="mt-4 flex items-center gap-2 border-t border-[var(--border)] pt-3">
+        {m.context_window > 0 && (
+          <span className="text-xs text-[var(--text-muted)]">{m.context_window.toLocaleString()} context</span>
+        )}
+        {(m.input_per_m > 0 || m.output_per_m > 0) && (
+          <span className="text-xs text-[var(--text-muted)]">${m.input_per_m}/${m.output_per_m} per M</span>
+        )}
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="ml-auto flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+          title="Copy model path"
+          aria-label={`Copy model path ${fullModel}`}
+        >
+          {copied ? <CheckCircle className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+        </button>
+      </div>
+    </article>
   );
 }
 

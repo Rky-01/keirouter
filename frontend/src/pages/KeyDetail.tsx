@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  KeyRound,
   Settings as SettingsIcon,
   Cpu,
   Shield,
@@ -87,13 +88,16 @@ export function KeyDetailPage() {
   return (
     <div>
       <button
+        type="button"
         onClick={() => navigate("/keys")}
-        className="mb-2 inline-flex items-center text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+        className="mb-4 inline-flex min-h-9 items-center gap-2 rounded-lg px-1 text-sm font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
       >
-        <ArrowLeft className="h-3 w-3 mr-1" /> All API keys
+        <ArrowLeft className="h-4 w-4" />
+        API keys
       </button>
       <PageHeader
         title={key.name}
+        icon={KeyRound}
         description={`${key.display} · ${key.disabled ? "Disabled" : "Active"}`}
       />
       <div className="mb-4">

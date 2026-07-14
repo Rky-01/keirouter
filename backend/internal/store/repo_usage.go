@@ -35,6 +35,26 @@ func (r *UsageRepo) RecordBatch(ctx context.Context, records []UsageRecord) erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// PostgreSQL accepts at most 65,535 bind parameters; SQLite builds used by
+	// KeiRouter allow 32,766. Keep each statement below both limits while one
+	// transaction preserves all-or-nothing batch semantics.
+	maxRows := 1000
+	if r.db.dialect == DialectPostgres {
+		maxRows = 2400
+	}
+	for start := 0; start < len(records); start += maxRows {
+		end := min(start+maxRows, len(records))
+		if err := insertUsageBatch(ctx, tx, r.db.rebind, records[start:end]); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit usage batch: %w", err)
+	}
+	return nil
+}
+
+func insertUsageBatch(ctx context.Context, tx *sql.Tx, rebind func(string) string, records []UsageRecord) error {
 	const cols = 27
 	var b strings.Builder
 	b.WriteString(`INSERT INTO usage_records
@@ -52,12 +72,8 @@ func (r *UsageRepo) RecordBatch(ctx context.Context, records []UsageRecord) erro
 		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args, usageArgs(u)...)
 	}
-	q := r.db.rebind(b.String())
-	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+	if _, err := tx.ExecContext(ctx, rebind(b.String()), args...); err != nil {
 		return fmt.Errorf("store: record usage batch: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit usage batch: %w", err)
 	}
 	return nil
 }

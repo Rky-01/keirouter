@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 // order. Each migration runs inside a transaction so a failure leaves the
 // schema untouched. It is safe to call on every startup.
 func (db *DB) Migrate(ctx context.Context) error {
+	unlock, err := db.lockMigrations(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	if _, err := db.sql.ExecContext(ctx, migrationsTable); err != nil {
 		return fmt.Errorf("store: create migrations table: %w", err)
 	}
@@ -39,7 +45,10 @@ func (db *DB) Migrate(ctx context.Context) error {
 	}
 
 	for _, f := range files {
-		version := strings.TrimSuffix(f, ".sql")
+		if !db.migrationApplies(f) {
+			continue
+		}
+		version := migrationVersion(f)
 		if _, done := applied[version]; done {
 			continue
 		}
@@ -54,6 +63,47 @@ func (db *DB) Migrate(ctx context.Context) error {
 	return nil
 }
 
+const migrationLockID int64 = 0x4b4549524f555445 // "KEIROUTE"
+
+// lockMigrations serializes schema changes across application replicas. The
+// advisory lock is held by a dedicated PostgreSQL connection for the complete
+// migration run; SQLite already serializes DDL through its file lock.
+func (db *DB) lockMigrations(ctx context.Context) (func(), error) {
+	if db.dialect != DialectPostgres {
+		return func() {}, nil
+	}
+	conn, err := db.sql.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: acquire migration connection: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockID); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("store: acquire migration lock: %w", err)
+	}
+	return func() {
+		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockID)
+		_ = conn.Close()
+	}, nil
+}
+
+func (db *DB) migrationApplies(filename string) bool {
+	switch {
+	case strings.HasSuffix(filename, ".postgres.sql"):
+		return db.dialect == DialectPostgres
+	case strings.HasSuffix(filename, ".sqlite.sql"):
+		return db.dialect == DialectSQLite
+	default:
+		return true
+	}
+}
+
+func migrationVersion(filename string) string {
+	version := strings.TrimSuffix(filename, ".sql")
+	version = strings.TrimSuffix(version, ".postgres")
+	version = strings.TrimSuffix(version, ".sqlite")
+	return version
+}
+
 func (db *DB) runMigration(ctx context.Context, version, body string) error {
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -65,18 +115,34 @@ func (db *DB) runMigration(ctx context.Context, version, body string) error {
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
+
+		const savepoint = "keirouter_migration_statement"
+		if db.dialect == DialectPostgres {
+			if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+				return fmt.Errorf("create migration savepoint: %w", err)
+			}
+		}
+
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			// Tolerate an "ADD COLUMN" whose column already exists. This makes
-			// migrations idempotent against the case where a migration file was
-			// renamed/renumbered after being applied to a database: the new
-			// version is not yet recorded in schema_migrations, so it re-runs,
-			// but the column it adds is already present. The desired end state
-			// (the column exists) is already satisfied, so we skip the
-			// statement instead of aborting. Any other failure still rolls back.
+			// PostgreSQL marks the transaction aborted after any statement error.
+			// Restore the statement savepoint before tolerating a duplicate column.
 			if isAddColumnAlreadyExists(stmt, err) {
+				if db.dialect == DialectPostgres {
+					if _, rollbackErr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); rollbackErr != nil {
+						return fmt.Errorf("restore migration savepoint: %w", rollbackErr)
+					}
+					if _, releaseErr := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); releaseErr != nil {
+						return fmt.Errorf("release migration savepoint: %w", releaseErr)
+					}
+				}
 				continue
 			}
 			return fmt.Errorf("statement failed: %w\n%s", err, stmt)
+		}
+		if db.dialect == DialectPostgres {
+			if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+				return fmt.Errorf("release migration savepoint: %w", err)
+			}
 		}
 	}
 
