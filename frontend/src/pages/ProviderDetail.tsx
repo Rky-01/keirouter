@@ -1377,12 +1377,17 @@ function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: 
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isCloudflare = provider.id === "cloudflare-ai";
-  const isCustom = provider.id === "custom-openai" || provider.id === "custom-anthropic" || !!provider.custom;
   const hasRegions = (provider.regions?.length ?? 0) > 0;
-  const requiresBaseURL = isCustom;
+  // User-created custom provider instances already define a base URL, so keys
+  // inherit it — no shared base URL input is needed here.
+  const inheritsBaseURL = !!provider.custom && !!provider.base_url;
+  // Only the built-in generic gateways lack their own base URL and require one.
+  const requiresBaseURL =
+    !inheritsBaseURL && (provider.id === "custom-openai" || provider.id === "custom-anthropic");
   // Generic providers expose an optional shared base URL; region/Cloudflare
-  // providers use their own dedicated control instead.
-  const showBaseURL = !hasRegions && !isCloudflare;
+  // providers use their own dedicated control, and inherited-base-URL custom
+  // instances need no input at all.
+  const showBaseURL = !hasRegions && !isCloudflare && !inheritsBaseURL;
   const keyPlaceholder = provider.id === "xai" ? "xai-..." : "sk-...";
 
   const parsed = useMemo(() => parseKeys(text), [text]);
@@ -1516,6 +1521,14 @@ function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: 
                 </Field>
               )}
             </div>
+          )}
+
+          {inheritsBaseURL && (
+            <p className="text-xs text-[var(--text-muted)]">
+              Keys use this provider's base URL{" "}
+              <code className="font-mono text-[var(--text)]">{provider.base_url}</code>. Change it in
+              the provider settings.
+            </p>
           )}
 
           <div className="space-y-1.5">
@@ -1700,7 +1713,14 @@ function AddApiKeyModal({
   const apiKeyOptional = supportsNone && supportsApiKey;
   const isAzure = provider.id === "azure";
   const isCloudflare = provider.id === "cloudflare-ai";
-  const requiresBaseURL = provider.id === "custom-openai" || provider.id === "custom-anthropic";
+  // A user-created custom provider instance carries its own base URL (set when
+  // the provider was created), so its accounts inherit it — asking for a base
+  // URL again per API key is redundant and confusing.
+  const inheritsBaseURL = !!provider.custom && !!provider.base_url;
+  // The built-in generic gateways ("custom-openai"/"custom-anthropic") have no
+  // base URL of their own, so each account must still supply one.
+  const requiresBaseURL =
+    !inheritsBaseURL && (provider.id === "custom-openai" || provider.id === "custom-anthropic");
   const credentialLabel = isNoAuth ? "Connection" : apiKeyOptional ? "API key (optional)" : "API key";
   const canSubmit =
     !pending &&
@@ -1859,6 +1879,17 @@ function AddApiKeyModal({
                   </option>
                 ))}
               </select>
+            </Field>
+          ) : inheritsBaseURL ? (
+            <Field label="Base URL">
+              <div className="flex items-center rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2">
+                <code className="truncate font-mono text-xs text-[var(--text-muted)]" title={provider.base_url}>
+                  {provider.base_url}
+                </code>
+              </div>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Inherited from this provider. Change it in the provider settings.
+              </p>
             </Field>
           ) : (
             <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>

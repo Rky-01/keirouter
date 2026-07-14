@@ -1,6 +1,7 @@
 package slimmer
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,12 +25,12 @@ func TestParseFilterLevel(t *testing.T) {
 
 func TestDetectLanguage(t *testing.T) {
 	cases := map[string]Language{
-		`{"key": "value"}`:                        LangData,
-		"---\nname: test\nvalue: 42\n":            LangData,
-		"package main\n\nfunc main() {\n}\n":      LangCFamily,
-		"def hello():\n    return True\n":         LangPython,
-		"#!/bin/bash\necho hello\n":               LangRubyShell,
-		"func main() {\n\treturn nil\n}\n":        LangCFamily,
+		`{"key": "value"}`:                   LangData,
+		"---\nname: test\nvalue: 42\n":       LangData,
+		"package main\n\nfunc main() {\n}\n": LangCFamily,
+		"def hello():\n    return True\n":    LangPython,
+		"#!/bin/bash\necho hello\n":          LangRubyShell,
+		"func main() {\n\treturn nil\n}\n":   LangCFamily,
 	}
 	for input, want := range cases {
 		got := detectLanguage(input)
@@ -87,6 +88,9 @@ def hello():
 	require.Contains(t, result, "return True")
 }
 
+// Aggressive mode performs signature extraction: imports and signatures survive
+// while bodies — including docstrings — collapse to a single
+// "// ... implementation" marker.
 func TestStripPythonComments_AggressiveDocstrings(t *testing.T) {
 	input := `import os
 
@@ -106,7 +110,41 @@ class Foo:
 	require.NotContains(t, result, "docstring should be removed")
 	require.NotContains(t, result, "Multi-line docstring")
 	require.Contains(t, result, "def hello()")
-	require.Contains(t, result, "return True")
+	require.Contains(t, result, "class Foo")
+	require.Contains(t, result, "// ... implementation")
+	// Body statements are collapsed, not preserved, in aggressive mode.
+	require.NotContains(t, result, "return True")
+}
+
+// TestAggressiveSignatureExtraction verifies aggressive mode keeps the
+// structural skeleton (imports + signatures) and collapses function bodies.
+func TestAggressiveSignatureExtraction(t *testing.T) {
+	code := `package main
+
+import "fmt"
+
+func greet(name string) string {
+	msg := "hello " + name
+	return msg
+}
+`
+	result, err := stripComments(code, FilterAggressive)
+	require.NoError(t, err)
+	require.Contains(t, result, `import "fmt"`)
+	require.Contains(t, result, "func greet")
+	require.Contains(t, result, "// ... implementation")
+	require.NotContains(t, result, `msg := "hello "`)
+	require.LessOrEqual(t, len(result), len(code))
+}
+
+// TestMinimalKeepsDocComments verifies minimal mode preserves doc comments
+// (///) while dropping ordinary line comments.
+func TestMinimalKeepsDocComments(t *testing.T) {
+	code := "package main\n\n// ordinary comment to drop\n/// doc comment to keep\nfunc main() {\n\treturn\n}\n"
+	result, err := stripComments(code, FilterMinimal)
+	require.NoError(t, err)
+	require.NotContains(t, result, "ordinary comment to drop")
+	require.Contains(t, result, "/// doc comment to keep")
 }
 
 func TestStripHashComments(t *testing.T) {
@@ -123,29 +161,65 @@ ls -la
 	require.Contains(t, result, `echo "hello"`)
 }
 
-func TestStripAggressive_BlankLines(t *testing.T) {
-	input := `package main
-
-
-import "fmt"
-
-
-
-func main() {
-	fmt.Println("hi")
-}
-`
-	result := stripBlankLinesAndTrailing(input)
+func TestNormalizeBlankLines(t *testing.T) {
+	input := "package main\n\n\nimport \"fmt\"\n\n\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"
+	result := normalizeBlankLines(input)
 	lines := strings.Split(result, "\n")
 	consecutiveBlanks := 0
 	for _, l := range lines {
 		if l == "" {
 			consecutiveBlanks++
-			require.LessOrEqual(t, consecutiveBlanks, 1, "no consecutive blank lines allowed")
+			require.LessOrEqual(t, consecutiveBlanks, 1, "runs of blank lines must collapse")
 		} else {
 			consecutiveBlanks = 0
 		}
 	}
+}
+
+// TestSmartTruncate verifies there are no synthetic comment annotations, a
+// single "[N more lines]" marker, and the invariant that the kept line count
+// plus the reported overflow equals the input line count.
+func TestSmartTruncate(t *testing.T) {
+	const total, maxLines = 200, 20
+	rows := make([]string, total)
+	for i := 0; i < total; i++ {
+		rows[i] = fmt.Sprintf("plain text line number %d", i)
+	}
+	out := smartTruncate(strings.Join(rows, "\n"), maxLines)
+
+	require.NotContains(t, out, "// ...", "must not emit comment-like markers")
+
+	var overflow string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "more lines") {
+			overflow = strings.TrimSpace(l)
+		}
+	}
+	require.NotEmpty(t, overflow, "overflow marker missing")
+
+	var reported int
+	_, err := fmt.Sscanf(overflow, "[%d more lines]", &reported)
+	require.NoError(t, err)
+
+	kept := 0
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.Contains(l, "more lines") {
+			kept++
+		}
+	}
+	require.Equal(t, total, kept+reported, "kept + overflow must equal total")
+}
+
+func TestSmartTruncate_NoTruncationUnderLimit(t *testing.T) {
+	in := "a\nb\nc"
+	require.Equal(t, in, smartTruncate(in, 10))
+}
+
+func TestReducedCap(t *testing.T) {
+	require.Equal(t, 5, reduced(CapWarnings, 5)) // 10 - 5
+	require.Equal(t, 15, reduced(CapList, 5))    // 20 - 5
+	require.Equal(t, 4, reduced(4, 5))           // by >= cap: fall back to cap
+	require.Equal(t, 0, reduced(0, 5))           // zero cap stays zero
 }
 
 func TestSourceCodeRule_Detect(t *testing.T) {

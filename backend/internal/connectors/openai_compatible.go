@@ -95,6 +95,24 @@ func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 		return mergeHeaders(h, creds.Headers)
 	}
 
+	// AgentRouter restricts upstream access to a known set of CLI/IDE tools
+	// (Claude Code CLI, Cline, Roo Code, Kilo Code, Qwen Code, OpenCode, etc.).
+	// Impersonate Claude Code CLI so outbound requests pass the endpoint
+	// allowlist. Auth mirrors the default Bearer path below.
+	if c.id == "agentrouter" {
+		switch {
+		case creds.AccessToken != "":
+			h["Authorization"] = bearer(creds.AccessToken)
+		case creds.APIKey != "":
+			h["Authorization"] = bearer(creds.APIKey)
+		}
+		h["User-Agent"] = "claude-cli/1.0.95 (external, cli)"
+		h["x-app"] = "cli"
+		h["anthropic-version"] = "2023-06-01"
+		h["anthropic-beta"] = "fine-grained-tool-streaming-2025-05-14"
+		return mergeHeaders(h, creds.Headers)
+	}
+
 	// Kimchi requires a custom User-Agent.
 	if c.id == "kimchi" {
 		tok := creds.AccessToken

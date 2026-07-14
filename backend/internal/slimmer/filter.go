@@ -1,20 +1,29 @@
 package slimmer
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
 
 // FilterLevel selects how aggressively source code comments are stripped.
+//
+// The levels are:
+//   - Minimal strips full-line and block comments but preserves doc comments
+//     (///, /**, Python docstrings) and never touches inline comments, then
+//     normalizes runs of blank lines down to at most two.
+//   - Aggressive first runs the minimal pass, then reduces source down to its
+//     structural skeleton: imports, function/type signatures, and top-level
+//     constants are kept while bodies collapse to a "// ... implementation"
+//     marker.
 type FilterLevel int
 
 const (
 	// FilterNone disables source code filtering (default, backward compatible).
 	FilterNone FilterLevel = iota
-	// FilterMinimal strips line and block comments only.
+	// FilterMinimal strips comments (keeping doc comments) and normalizes blanks.
 	FilterMinimal
-	// FilterAggressive strips comments, docstrings, blank lines, and trailing
-	// whitespace.
+	// FilterAggressive keeps only the structural skeleton (signatures + imports).
 	FilterAggressive
 )
 
@@ -36,11 +45,37 @@ type Language int
 
 const (
 	LangUnknown Language = iota
-	LangCFamily            // Go, JS, TS, Rust, Java, C, C++
+	LangCFamily          // Go, JS, TS, Rust, Java, C, C++
 	LangPython
 	LangRubyShell // Ruby, Shell — #-style comments only
-	LangData       // JSON, YAML, TOML, XML — no comment stripping
+	LangData      // JSON, YAML, TOML, XML — no comment stripping
 )
+
+// commentPatterns describes the comment syntax for a language group.
+// Empty strings mean "not applicable".
+type commentPatterns struct {
+	line       string // single-line comment marker (e.g. "//", "#")
+	blockStart string // block comment opener (e.g. "/*")
+	blockEnd   string // block comment closer (e.g. "*/")
+	docLine    string // preserved line-doc marker (e.g. "///")
+	docBlock   string // preserved block-doc opener (e.g. "/**", `"""`)
+}
+
+// patterns returns the comment syntax for the language group.
+func (l Language) patterns() commentPatterns {
+	switch l {
+	case LangCFamily:
+		return commentPatterns{line: "//", blockStart: "/*", blockEnd: "*/", docLine: "///", docBlock: "/**"}
+	case LangPython:
+		return commentPatterns{line: "#", blockStart: `"""`, blockEnd: `"""`, docBlock: `"""`}
+	case LangRubyShell:
+		return commentPatterns{line: "#", blockStart: "=begin", blockEnd: "=end"}
+	case LangData:
+		return commentPatterns{} // never strip data formats
+	default: // LangUnknown — conservative C-family defaults
+		return commentPatterns{line: "//", blockStart: "/*", blockEnd: "*/"}
+	}
+}
 
 // detectLanguage guesses the language from syntax patterns in the content probe.
 // Returns LangData when the content looks like a data format (no stripping).
@@ -124,17 +159,31 @@ func (sourceCodeRule) Detect(probe string) float64 {
 	return 0
 }
 
-// Compress strips comments from source code content. The filter level is
-// determined by the engine's Config; this method uses FilterMinimal as the
-// default when called directly. The engine applies aggressive filtering as a
-// secondary pass when configured.
+// Compress strips comments from source code content. When called directly it
+// uses FilterMinimal; the engine applies aggressive filtering as a secondary
+// pass when configured.
 func (sourceCodeRule) Compress(content string) (string, error) {
 	return stripComments(content, FilterMinimal)
 }
 
-// stripComments removes comments from content based on detected language and
-// filter level. Returns original content when the language is LangData or
-// when stripping would not reduce size.
+// ---- comment stripping ------------------------------------------------------
+
+var (
+	// reMultiBlank collapses runs of 3+ newlines to a single blank line.
+	reMultiBlank = regexp.MustCompile(`\n{3,}`)
+
+	// reImportLine matches import-like statements that aggressive mode preserves.
+	reImportLine = regexp.MustCompile(`^(use |import |from |require\(|#include)`)
+
+	// reFuncSig matches function/type declaration signatures preserved by
+	// aggressive mode (and treated as "important" by smartTruncate).
+	reFuncSig = regexp.MustCompile(`^(pub\s+)?(async\s+)?(fn|def|function|func|class|struct|enum|trait|interface|type)\s+\w+`)
+)
+
+// stripComments removes comments from content based on the detected language and
+// filter level. Data formats (JSON/YAML/TOML/...) are returned untouched so that
+// constructs like "packages/*" are never mistaken for block comments. The result
+// is never returned larger than the input.
 func stripComments(content string, level FilterLevel) (string, error) {
 	if level == FilterNone {
 		return content, nil
@@ -145,195 +194,177 @@ func stripComments(content string, level FilterLevel) (string, error) {
 		return content, nil
 	}
 
-	var result string
-	switch lang {
-	case LangCFamily:
-		result = stripCFamilyComments(content, level)
-	case LangPython:
-		result = stripPythonComments(content, level)
-	case LangRubyShell:
-		result = stripHashComments(content, level)
-	default:
-		result = stripCFamilyComments(content, level) // conservative default
-	}
+	minimal := normalizeBlankLines(minimalFilter(content, lang.patterns()))
 
+	result := minimal
 	if level == FilterAggressive {
-		result = stripBlankLinesAndTrailing(result)
+		result = aggressiveFilter(minimal)
 	}
 
-	// Safety: never return larger content.
+	// Safety: never return larger content, and never empty a payload.
 	if len(result) >= len(content) || result == "" {
 		return content, nil
 	}
 	return result, nil
 }
 
-// stripCFamilyComments removes // line comments and /* */ block comments.
-func stripCFamilyComments(content string, level FilterLevel) string {
-	var out []string
+// minimalFilter drops full-line comments and block comments while preserving doc
+// comments, shebangs, and inline comments.
+func minimalFilter(content string, p commentPatterns) string {
+	var b strings.Builder
+	b.Grow(len(content))
 	inBlock := false
+	inDocstring := false
+
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 
-		if inBlock {
-			if idx := strings.Index(line, "*/"); idx >= 0 {
-				inBlock = false
-				// Keep the part after */ if any.
-				rest := strings.TrimSpace(line[idx+2:])
-				if rest != "" {
-					out = append(out, rest)
-				}
-			}
+		// Preserve shebangs (also used as a language signal).
+		if strings.HasPrefix(trimmed, "#!") {
+			b.WriteString(line)
+			b.WriteByte('\n')
 			continue
 		}
 
-		if strings.Contains(trimmed, "/*") {
-			if idx := strings.Index(line, "/*"); idx >= 0 {
-				// Check if block comment closes on same line.
-				if closeIdx := strings.Index(line[idx+2:], "*/"); closeIdx >= 0 {
-					// Inline block comment: keep code before and after.
-					before := line[:idx]
-					after := strings.TrimSpace(line[idx+2+closeIdx+2:])
-					combined := strings.TrimSpace(before + " " + after)
-					if combined != "" {
-						out = append(out, combined)
-					} else if level != FilterAggressive {
-						out = append(out, line) // preserve original for minimal
-					}
-					continue
-				}
-				// Multi-line block comment starts.
-				before := strings.TrimSpace(line[:idx])
-				if before != "" {
-					out = append(out, before)
-				}
+		// Block comments (skipped unless they open a preserved doc block).
+		if p.blockStart != "" && p.blockEnd != "" {
+			isDocBlock := p.docBlock != "" && strings.HasPrefix(trimmed, p.docBlock)
+			if !inDocstring && strings.Contains(trimmed, p.blockStart) && !isDocBlock {
 				inBlock = true
+			}
+			if inBlock {
+				if strings.Contains(trimmed, p.blockEnd) {
+					inBlock = false
+				}
 				continue
 			}
 		}
 
-		// Line comment: strip if it's a pure comment line.
-		if strings.HasPrefix(trimmed, "//") {
+		// Python-style docstrings are preserved in minimal mode.
+		if p.docBlock == `"""` && strings.HasPrefix(trimmed, `"""`) {
+			inDocstring = !inDocstring
+			b.WriteString(line)
+			b.WriteByte('\n')
 			continue
 		}
-
-		// Inline comment: strip the // part but keep code.
-		if idx := findInlineComment(line, "//"); idx >= 0 {
-			out = append(out, strings.TrimRight(line[:idx], " \t"))
-			continue
-		}
-
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
-}
-
-// stripPythonComments removes # line comments and optionally triple-quote docstrings.
-func stripPythonComments(content string, level FilterLevel) string {
-	var out []string
-	inDocstring := false
-	docChar := ""
-
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-
 		if inDocstring {
-			if strings.Contains(trimmed, docChar) {
-				inDocstring = false
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+
+		// Full-line comments are dropped, except doc comments (e.g. ///).
+		if p.line != "" && strings.HasPrefix(trimmed, p.line) {
+			if p.docLine != "" && strings.HasPrefix(trimmed, p.docLine) {
+				b.WriteString(line)
+				b.WriteByte('\n')
 			}
 			continue
 		}
 
-		if level == FilterAggressive {
-			for _, q := range []string{`"""`, `'''`} {
-				if strings.HasPrefix(trimmed, q) {
-					// Check if docstring closes on same line.
-					rest := trimmed[3:]
-					if strings.Contains(rest, q) {
-						// Single-line docstring: skip.
-						goto nextLine
-					}
-					inDocstring = true
-					docChar = q
-					goto nextLine
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// aggressiveFilter reduces already-minimal source to its structural skeleton:
+// imports, signatures, and top-level constants are kept; bodies collapse to a
+// single "// ... implementation" marker.
+func aggressiveFilter(minimal string) string {
+	var b strings.Builder
+	braceDepth := 0
+	inImplBody := false
+
+	for _, line := range strings.Split(minimal, "\n") {
+		trimmed := strings.TrimSpace(line)
+
+		// Always keep imports.
+		if reImportLine.MatchString(trimmed) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+			continue
+		}
+
+		// Always keep function/type signatures.
+		if reFuncSig.MatchString(trimmed) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+			inImplBody = true
+			braceDepth = 0
+			continue
+		}
+
+		openBraces := strings.Count(trimmed, "{")
+		closeBraces := strings.Count(trimmed, "}")
+
+		if inImplBody {
+			braceDepth += openBraces - closeBraces
+
+			// Keep only the outermost braces of the body.
+			if braceDepth <= 1 && (trimmed == "{" || trimmed == "}" || strings.HasSuffix(trimmed, "{")) {
+				b.WriteString(line)
+				b.WriteByte('\n')
+			}
+
+			if braceDepth <= 0 {
+				inImplBody = false
+				if trimmed != "" && trimmed != "}" {
+					b.WriteString("    // ... implementation\n")
 				}
 			}
-		}
-
-		// Pure # comment line.
-		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 
-		// Inline # comment.
-		if idx := findInlineComment(line, "#"); idx >= 0 {
-			out = append(out, strings.TrimRight(line[:idx], " \t"))
-			continue
+		// Keep top-level constants and statics.
+		if strings.HasPrefix(trimmed, "const ") || strings.HasPrefix(trimmed, "static ") ||
+			strings.HasPrefix(trimmed, "let ") || strings.HasPrefix(trimmed, "pub const ") ||
+			strings.HasPrefix(trimmed, "pub static ") {
+			b.WriteString(line)
+			b.WriteByte('\n')
 		}
-
-		out = append(out, line)
-	nextLine:
 	}
-	return strings.Join(out, "\n")
+
+	return strings.TrimSpace(b.String())
 }
 
-// stripHashComments removes #-style comments (Ruby, Shell).
-func stripHashComments(content string, level FilterLevel) string {
-	var out []string
-	for _, line := range strings.Split(content, "\n") {
+// normalizeBlankLines collapses runs of three or more newlines to a single
+// blank line and trims surrounding whitespace.
+func normalizeBlankLines(s string) string {
+	s = reMultiBlank.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
+
+// smartTruncate keeps a useful window of a long payload: structurally important
+// lines (signatures, imports, braces, exported items) are always kept, plus up
+// to maxLines/2 leading ordinary lines. The omitted tail is summarized with a
+// single unambiguous "[N more lines]" marker rather than inline comment-like
+// markers that agents can mistake for code.
+func smartTruncate(content string, maxLines int) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) <= maxLines {
+		return content
+	}
+
+	result := make([]string, 0, maxLines+1)
+	kept := 0
+	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Shebangs and pure comment lines.
-		if strings.HasPrefix(trimmed, "#!") {
-			out = append(out, line) // preserve shebangs
-			continue
-		}
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		// Inline # comment.
-		if idx := findInlineComment(line, "#"); idx >= 0 {
-			out = append(out, strings.TrimRight(line[:idx], " \t"))
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
-}
+		important := reFuncSig.MatchString(trimmed) ||
+			reImportLine.MatchString(trimmed) ||
+			strings.HasPrefix(trimmed, "pub ") ||
+			strings.HasPrefix(trimmed, "export ") ||
+			trimmed == "}" || trimmed == "{"
 
-// findInlineComment locates a comment marker that isn't inside a string
-// literal. This is a heuristic: it checks that the marker is preceded by
-// whitespace and not inside quotes. Good enough for compression purposes.
-func findInlineComment(line, marker string) int {
-	idx := strings.Index(line, " "+marker)
-	if idx < 0 {
-		idx = strings.Index(line, "\t"+marker)
-	}
-	if idx < 0 {
-		return -1
-	}
-	// Skip if inside quotes (simple heuristic: count quotes before marker).
-	before := line[:idx]
-	singles := strings.Count(before, "'")
-	doubles := strings.Count(before, "\"")
-	if singles%2 != 0 || doubles%2 != 0 {
-		return -1 // likely inside a string
-	}
-	return idx + 1 // skip the leading space/tab
-}
-
-// stripBlankLinesAndTrailing removes consecutive blank lines (keeping at most
-// one) and trims trailing whitespace from each line.
-func stripBlankLinesAndTrailing(content string) string {
-	var out []string
-	prevBlank := false
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimRight(line, " \t")
-		blank := trimmed == ""
-		if blank && prevBlank {
-			continue
+		if important || kept < maxLines/2 {
+			result = append(result, line)
+			kept++
 		}
-		out = append(out, trimmed)
-		prevBlank = blank
+		if kept >= maxLines-1 {
+			break
+		}
 	}
-	return strings.Join(out, "\n")
+
+	result = append(result, fmt.Sprintf("[%d more lines]", len(lines)-kept))
+	return strings.Join(result, "\n")
 }

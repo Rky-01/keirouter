@@ -31,16 +31,17 @@ func BuiltinRules() []Rule {
 
 // Tuning thresholds. Kept as named constants so behavior is auditable.
 const (
-	diffHunkMaxLines   = 100
-	diffContextKeep    = 3
+	diffHunkMaxLines    = 100
+	diffContextKeep     = 3
 	diffCompactMaxLines = 500
-	grepPerFileMax     = 10
-	findPerDirMax      = 10
-	treeMaxLines       = 200
-	dedupMinLines      = 5
-	truncateHeadLines  = 60
-	truncateTailLines  = 40
-	truncateTriggerCap = 240 // only truncate inputs longer than this many lines
+	grepPerFileMax      = 10
+	findPerDirMax       = 10
+	treeMaxLines        = 200
+	dedupMinLines       = 5
+	truncateHeadLines   = 60
+	truncateTailLines   = 40
+	truncateTriggerCap  = 240 // only truncate inputs longer than this many lines
+	truncateMaxLines    = 100 // visible window kept by the generic smart-truncate
 )
 
 // ---- git-diff ---------------------------------------------------------------
@@ -536,14 +537,15 @@ func (truncateRule) Compress(content string) (string, error) {
 	if len(lines) <= truncateTriggerCap {
 		return content, nil
 	}
-	return headTailElide(lines, truncateHeadLines, truncateTailLines), nil
+	// Importance-based selection with a single unambiguous overflow marker.
+	return smartTruncate(content, truncateMaxLines), nil
 }
 
 // ---- test-runner output -----------------------------------------------------
 
 var (
-	reTestFail = regexp.MustCompile(`(?i)(FAIL|FAILED|❌|✗|✘)`)
-	reTestPass = regexp.MustCompile(`(?i)(PASS|PASSED|✓|✔|ok\s)`)
+	reTestFail    = regexp.MustCompile(`(?i)(FAIL|FAILED|❌|✗|✘)`)
+	reTestPass    = regexp.MustCompile(`(?i)(PASS|PASSED|✓|✔|ok\s)`)
 	reTestSummary = regexp.MustCompile(`(?i)(Tests?:|Test Suites?:|test result:|FAILED|failed)`)
 )
 

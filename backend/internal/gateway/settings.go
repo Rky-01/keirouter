@@ -385,7 +385,11 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "headroom_url is required when Headroom is enabled")
 		return
 	}
-	if strings.TrimSpace(current.HeadroomURL) != "" {
+	// Only run SSRF validation when this request actually sets headroom_url.
+	// Re-validating a previously persisted URL on unrelated patches (e.g.
+	// toggling RTK/Caveman) would reject saves whenever the stored Headroom
+	// proxy points at a local/private host, which is a supported deployment.
+	if patch.HeadroomURL != nil && strings.TrimSpace(current.HeadroomURL) != "" {
 		if err := httputil.ValidateBaseURL(current.HeadroomURL); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid headroom_url: URL blocked by security policy")
 			return
@@ -427,7 +431,9 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.OutboundProxyURL != nil {
 		current.OutboundProxyURL = *patch.OutboundProxyURL
 	}
-	if strings.TrimSpace(current.OutboundProxyURL) != "" {
+	// Same rationale as headroom_url: only validate when this request supplies
+	// the proxy URL, so unrelated patches don't fail on a persisted value.
+	if patch.OutboundProxyURL != nil && strings.TrimSpace(current.OutboundProxyURL) != "" {
 		if err := httputil.ValidateProxyURL(current.OutboundProxyURL); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid outbound_proxy_url: URL blocked by security policy")
 			return

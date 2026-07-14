@@ -1,6 +1,6 @@
 // Package slimmer — truncate.go defines global truncation caps shared by every
-// filter rule, matching the upstream RTK convention where different content
-// categories get different caps based on actionability.
+// filter rule, where different content categories get different caps based on
+// actionability.
 package slimmer
 
 const (
@@ -20,6 +20,16 @@ const (
 	// npm ls). These are reference data, not actionable output.
 	CapInventory = 50
 )
+
+// reduced returns a cap lowered by the given offset for a more verbose data
+// class. It is underflow-safe: when by >= cap it falls back to cap so a
+// deviation can never empty a list, and a zero cap always stays zero.
+func reduced(cap, by int) int {
+	if by < cap {
+		return cap - by
+	}
+	return cap
+}
 
 // capLines truncates lines to at most max entries, appending a summary line
 // when truncation occurred. Returns the (possibly unchanged) lines and whether
