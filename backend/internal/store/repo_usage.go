@@ -38,9 +38,17 @@ func (r *UsageRepo) RecordBatch(ctx context.Context, records []UsageRecord) erro
 	// PostgreSQL accepts at most 65,535 bind parameters; SQLite builds used by
 	// KeiRouter allow 32,766. Keep each statement below both limits while one
 	// transaction preserves all-or-nothing batch semantics.
-	maxRows := 1000
+	const (
+		postgresBindLimit = 65535
+		sqliteBindLimit   = 32766
+	)
+	argsPerRow := len(usageArgs(UsageRecord{}))
+	maxRows := sqliteBindLimit / argsPerRow
 	if r.db.dialect == DialectPostgres {
-		maxRows = 2400
+		maxRows = postgresBindLimit / argsPerRow
+	}
+	if maxRows < 1 {
+		maxRows = 1
 	}
 	for start := 0; start < len(records); start += maxRows {
 		end := min(start+maxRows, len(records))
