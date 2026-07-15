@@ -274,19 +274,20 @@ func nodeDialectToken(t string) string {
 
 // n9routerConnection mirrors the exported providerConnection shape.
 type n9routerConnection struct {
-	ID           string         `json:"id"`
-	Provider     string         `json:"provider"`
-	AuthType     string         `json:"authType"`
-	Name         string         `json:"name"`
-	DisplayName  string         `json:"displayName"`
-	Email        string         `json:"email"`
-	Priority     int            `json:"priority"`
-	IsActive     *bool          `json:"isActive"`
-	APIKey       string         `json:"apiKey"`
-	AccessToken  string         `json:"accessToken"`
-	RefreshToken string         `json:"refreshToken"`
-	ExpiresAt    string         `json:"expiresAt"`
-	Data         map[string]any `json:"-"`
+	ID                   string         `json:"id"`
+	Provider             string         `json:"provider"`
+	AuthType             string         `json:"authType"`
+	Name                 string         `json:"name"`
+	DisplayName          string         `json:"displayName"`
+	Email                string         `json:"email"`
+	Priority             int            `json:"priority"`
+	IsActive             *bool          `json:"isActive"`
+	APIKey               string         `json:"apiKey"`
+	AccessToken          string         `json:"accessToken"`
+	RefreshToken         string         `json:"refreshToken"`
+	ExpiresAt            string         `json:"expiresAt"`
+	ProviderSpecificData map[string]any `json:"providerSpecificData"`
+	Data                 map[string]any `json:"-"`
 }
 
 func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult, nodeIDMap map[string]string) {
@@ -318,6 +319,11 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 				}
 				if c.ExpiresAt == "" {
 					c.ExpiresAt = strVal(c.Data["expiresAt"])
+				}
+				if c.ProviderSpecificData == nil {
+					if psd, ok := c.Data["providerSpecificData"].(map[string]any); ok {
+						c.ProviderSpecificData = psd
+					}
 				}
 			}
 		}
@@ -358,7 +364,7 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 		// codex workspaceId, base_url overrides, azure details, ...). These
 		// surface as creds.Extra at request time, so they MUST transfer for
 		// connectors like Qoder that require user_id to sign requests.
-		meta := psdToMetadata(provider, c.Data)
+		meta := psdToMetadata(provider, c.ProviderSpecificData)
 		// Top-level email is the canonical account email for OAuth providers;
 		// ensure it lands in metadata (qoder/cursor/cloudcode read it).
 		if c.Email != "" && meta["email"] == "" {
@@ -377,9 +383,8 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		if t := parseRFC3339(c.ExpiresAt); t != nil {
-			acc.TokenExpiresAt = t
-		}
+		secret.ExpiresAt = parseRFC3339(c.ExpiresAt)
+		secret.Metadata = meta
 		if err := s.vault.Seal(&acc, secret); err != nil {
 			res.Skipped++
 			res.Errors = append(res.Errors, fmt.Sprintf("connection %s: seal failed: %v", c.ID, err))
@@ -414,8 +419,11 @@ func n9routerAuthSecret(c n9routerConnection, spec connectors.ProviderSpec, spec
 			return store.AuthAPIKey, sec
 		}
 		return store.AuthOAuth, sec
-	case "apikey":
+	case "apikey", "api_key", "api-key":
 		sec.APIKey = c.APIKey
+		if sec.APIKey == "" {
+			sec.APIKey = c.AccessToken
+		}
 		if specOK && spec.AuthKind == "none" && c.APIKey == "" {
 			return store.AuthNone, sec
 		}
@@ -931,9 +939,14 @@ func normalizeOmniPayload(doc map[string]json.RawMessage) map[string]json.RawMes
 // looks for kiro_auth_method / kiro_region and finds auth_method / region.
 var psdKeyRemap = map[string]map[string]string{
 	"kiro": {
-		"authMethod": "kiro_auth_method",
-		"region":     "kiro_region",
-		"profileArn": "profile_arn",
+		"authMethod":    "kiro_auth_method",
+		"region":        "kiro_region",
+		"profileArn":    "kiro_profile_arn",
+		"clientId":      "kiro_client_id",
+		"clientSecret":  "kiro_client_secret",
+		"tokenEndpoint": "kiro_token_endpoint",
+		"scope":         "kiro_scope",
+		"scopes":        "kiro_scope",
 	},
 	"cursor": {
 		"machineId": "machine_id",

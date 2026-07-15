@@ -83,6 +83,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/proxy-pools", s.adminListProxyPools)
 	r.Post("/proxy-pools", s.adminCreateProxyPool)
+	r.Post("/proxy-pools/cloudflare-deploy", s.adminDeployCloudflareRelay)
 	r.Patch("/proxy-pools/{id}", s.adminUpdateProxyPool)
 	r.Delete("/proxy-pools/{id}", s.adminDeleteProxyPool)
 	r.Post("/proxy-pools/{id}/test", s.adminTestProxyPool)
@@ -677,6 +678,10 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "vault not configured")
 		return
 	}
+	if err := s.validateProxyPoolID(r.Context(), body.ProxyPoolID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	authKind := accountAuthKind(spec, body.APIKey)
 	if authKind != store.AuthNone && strings.TrimSpace(body.APIKey) == "" {
 		writeError(w, http.StatusBadRequest, "api_key is required")
@@ -728,7 +733,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: now,
 	}
 	if body.ProxyPoolID != "" {
-		acc.ProxyPoolID = body.ProxyPoolID
+		acc.ProxyPoolID = strings.TrimSpace(body.ProxyPoolID)
 	}
 	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
@@ -817,6 +822,10 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 	}
 	if len(body.Items) > bulkMaxItems {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many items: %d (max %d)", len(body.Items), bulkMaxItems))
+		return
+	}
+	if err := s.validateProxyPoolID(r.Context(), body.ProxyPoolID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -920,7 +929,7 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 				UpdatedAt: now,
 			}
 			if body.ProxyPoolID != "" {
-				acc.ProxyPoolID = body.ProxyPoolID
+				acc.ProxyPoolID = strings.TrimSpace(body.ProxyPoolID)
 			}
 			if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: key, Metadata: meta}); err != nil {
 				results[i].Status = "error"
@@ -1071,9 +1080,10 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Label    *string `json:"label"`
-		Priority *int    `json:"priority"`
-		Disabled *bool   `json:"disabled"`
+		Label       *string `json:"label"`
+		Priority    *int    `json:"priority"`
+		Disabled    *bool   `json:"disabled"`
+		ProxyPoolID *string `json:"proxy_pool_id"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1087,6 +1097,14 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if body.Disabled != nil {
 		acc.Disabled = *body.Disabled
 	}
+	if body.ProxyPoolID != nil {
+		poolID := strings.TrimSpace(*body.ProxyPoolID)
+		if err := s.validateProxyPoolID(r.Context(), poolID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		acc.ProxyPoolID = poolID
+	}
 	if err := s.accounts.Update(r.Context(), acc); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
@@ -1094,7 +1112,22 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": acc.ID, "provider": acc.Provider, "label": acc.Label,
 		"priority": acc.Priority, "disabled": acc.Disabled,
+		"proxy_pool_id": acc.ProxyPoolID,
 	})
+}
+
+func (s *Server) validateProxyPoolID(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	if s.pools == nil {
+		return fmt.Errorf("proxy pools not configured")
+	}
+	if _, err := s.pools.Get(ctx, id); err != nil {
+		return fmt.Errorf("proxy pool not found")
+	}
+	return nil
 }
 
 func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
@@ -2657,7 +2690,8 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	poolsOut := make([]map[string]any, 0, len(pools))
 	for _, p := range pools {
 		poolsOut = append(poolsOut, map[string]any{
-			"name": p.Name, "proxy_url": p.ProxyURL, "no_proxy": p.NoProxy,
+			"id": p.ID, "name": p.Name, "type": p.Type,
+			"proxy_url": p.ProxyURL, "no_proxy": p.NoProxy,
 			"strict": p.Strict, "is_active": p.IsActive,
 		})
 	}
@@ -2838,23 +2872,25 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	// Import proxy pools.
 	if raw, ok := payload["proxy_pools"]; ok {
 		var pools []struct {
+			ID       string `json:"id"`
 			Name     string `json:"name"`
+			Type     string `json:"type"`
 			ProxyURL string `json:"proxy_url"`
 			NoProxy  string `json:"no_proxy"`
 			Strict   bool   `json:"strict"`
-			IsActive bool   `json:"is_active"`
+			IsActive *bool  `json:"is_active"`
 		}
 		if err := json.Unmarshal(raw, &pools); err == nil {
 			for _, p := range pools {
 				now := time.Now()
 				pool := store.ProxyPool{
-					ID:         uuid.NewString(),
+					ID:         defaultStr(p.ID, uuid.NewString()),
 					Name:       p.Name,
-					Type:       "http",
+					Type:       defaultStr(p.Type, "http"),
 					ProxyURL:   p.ProxyURL,
 					NoProxy:    p.NoProxy,
 					Strict:     p.Strict,
-					IsActive:   defaultBool(p.IsActive, true),
+					IsActive:   p.IsActive == nil || *p.IsActive,
 					TestStatus: "unknown",
 					CreatedAt:  now,
 					UpdatedAt:  now,
