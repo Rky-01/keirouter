@@ -11,6 +11,18 @@ const (
 	FinishFilter    FinishReason = "content_filter"
 )
 
+// UsageSource identifies whether token counts came from an upstream usage
+// object, a router estimate, or a semantic-cache replay.
+type UsageSource string
+
+const (
+	UsageSourceProvider  UsageSource = "provider"
+	UsageSourceEstimated UsageSource = "estimated"
+	UsageSourceCache     UsageSource = "cache"
+	UsageSourceLegacy    UsageSource = "legacy"
+	UsageSourceNone      UsageSource = "none"
+)
+
 // Usage reports token accounting for a completion.
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
@@ -22,8 +34,11 @@ type Usage struct {
 	// CacheWriteTokens counts prompt tokens written into a provider-side prompt
 	// cache (cache writes — often priced at 25% *more* than standard input).
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-	// ReasoningTokens counts tokens spent on extended thinking.
+	// ReasoningTokens is a subset of CompletionTokens, never an additional token
+	// class. This invariant prevents reasoning output from being double charged.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// Source is router-internal provenance and is never emitted to API clients.
+	Source UsageSource `json:"-"`
 }
 
 // ChatResponse is the canonical non-streaming completion result.
@@ -39,13 +54,13 @@ type ChatResponse struct {
 type ChunkType string
 
 const (
-	ChunkText       ChunkType = "text"        // incremental assistant text
-	ChunkThinking   ChunkType = "thinking"    // incremental reasoning text
-	ChunkToolCall   ChunkType = "tool_call"   // (partial) tool invocation
-	ChunkUsage      ChunkType = "usage"       // usage update (often final)
-	ChunkFinish     ChunkType = "finish"      // terminal event with finish reason
-	ChunkError      ChunkType = "error"       // mid-stream error
-	ChunkPing       ChunkType = "ping"        // keep-alive / no-op
+	ChunkText     ChunkType = "text"      // incremental assistant text
+	ChunkThinking ChunkType = "thinking"  // incremental reasoning text
+	ChunkToolCall ChunkType = "tool_call" // (partial) tool invocation
+	ChunkUsage    ChunkType = "usage"     // usage update (often final)
+	ChunkFinish   ChunkType = "finish"    // terminal event with finish reason
+	ChunkError    ChunkType = "error"     // mid-stream error
+	ChunkPing     ChunkType = "ping"      // keep-alive / no-op
 )
 
 // StreamChunk is one provider-agnostic streaming event. The transform layer

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -61,109 +62,134 @@ func parseRangeDuration(raw string) time.Duration {
 }
 
 // adminHealthOverview returns summary cards + a per-provider status table.
+// provider_health_current is computed by the telemetry service over its
+// configured rolling window. The response publishes that effective window so
+// callers never mistake an arbitrary query range for historical aggregation.
 func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
-	if s.providerHealth == nil && s.db == nil {
+	if s.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "provider health not configured")
 		return
 	}
 	statusFilter := r.URL.Query().Get("status")
-	_ = parseRange(r.URL.Query().Get("range"))
+	requestedRange := r.URL.Query().Get("range")
 
-	rows, err := s.db.ProviderHealth().ListCurrent(r.Context(), statusFilter)
+	rows, err := s.db.ProviderHealth().ListCurrent(r.Context(), "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
 
-	// Aggregate by provider for the summary cards + provider table.
+	// Aggregate account/model/capability keys into one truthful provider row.
 	type provAgg struct {
-		provider          string
-		status            string
-		score             int
-		accounts          map[string]struct{}
-		models            map[string]struct{}
-		requests          int64
-		successes         int64
-		failures          int64
-		fallbacks         int64
-		latencyP95        int
-		ttftP95           int
-		lastProbe         *time.Time
-		mainIssue         string
-		recommendation    string
+		provider       string
+		status         string
+		score          int
+		accounts       map[string]struct{}
+		models         map[string]struct{}
+		requests       int64
+		successes      float64
+		failures       float64
+		fallbacks      int64
+		latencyP95     int
+		ttftP95        int
+		lastProbe      *time.Time
+		mainIssue      string
+		recommendation string
 	}
 	byProvider := map[string]*provAgg{}
-	summary := map[string]int64{
-		"healthy": 0, "degraded": 0, "unhealthy": 0, "unknown": 0, "disabled": 0,
-		"fallbacks": 0, "rate_limit_events": 0,
-	}
-	var totalP95 int
-	var p95Count int
-
-	for _, c := range rows {
-		summary[c.HealthStatus]++
-		summary["fallbacks"] += c.FallbackCount
-
-		agg, ok := byProvider[c.Provider]
+	for _, current := range rows {
+		agg, ok := byProvider[current.Provider]
 		if !ok {
 			agg = &provAgg{
-				provider:  c.Provider,
-				accounts:  map[string]struct{}{},
-				models:    map[string]struct{}{},
-				score:     100,
-				status:    health.StatusHealthy,
+				provider: current.Provider,
+				accounts: map[string]struct{}{},
+				models:   map[string]struct{}{},
+				score:    current.HealthScore,
+				status:   current.HealthStatus,
 			}
-			byProvider[c.Provider] = agg
+			if current.MainIssue != nil {
+				agg.mainIssue = *current.MainIssue
+			}
+			if current.Recommendation != nil {
+				agg.recommendation = *current.Recommendation
+			}
+			byProvider[current.Provider] = agg
+		} else {
+			replaceIssue := rank(current.HealthStatus) > rank(agg.status) || current.HealthScore < agg.score
+			if rank(current.HealthStatus) > rank(agg.status) {
+				agg.status = current.HealthStatus
+			}
+			if current.HealthScore < agg.score {
+				agg.score = current.HealthScore
+			}
+			if current.MainIssue != nil && *current.MainIssue != "" && (agg.mainIssue == "" || replaceIssue) {
+				agg.mainIssue = *current.MainIssue
+				if current.Recommendation != nil {
+					agg.recommendation = *current.Recommendation
+				}
+			}
 		}
-		if c.ProviderAccountID != "" {
-			agg.accounts[c.ProviderAccountID] = struct{}{}
+		if current.ProviderAccountID != "" {
+			agg.accounts[current.ProviderAccountID] = struct{}{}
 		}
-		if c.Model != "" {
-			agg.models[c.Model] = struct{}{}
+		if current.Model != "" {
+			agg.models[current.Model] = struct{}{}
 		}
-		agg.requests += c.RequestCount
-		// successes derived from success_rate * requests (approx for rollup).
-		agg.successes += int64(float64(c.RequestCount) * c.SuccessRate)
-		agg.failures += int64(float64(c.RequestCount) * c.ErrorRate)
-		agg.fallbacks += c.FallbackCount
-		if c.LatencyP95Ms != nil && *c.LatencyP95Ms > agg.latencyP95 {
-			agg.latencyP95 = *c.LatencyP95Ms
+		agg.requests += current.RequestCount
+		agg.successes += float64(current.RequestCount) * current.SuccessRate
+		agg.failures += float64(current.RequestCount) * current.ErrorRate
+		agg.fallbacks += current.FallbackCount
+		if current.LatencyP95Ms != nil && *current.LatencyP95Ms > agg.latencyP95 {
+			agg.latencyP95 = *current.LatencyP95Ms
 		}
-		if c.TTFTP95Ms != nil && *c.TTFTP95Ms > agg.ttftP95 {
-			agg.ttftP95 = *c.TTFTP95Ms
+		if current.TTFTP95Ms != nil && *current.TTFTP95Ms > agg.ttftP95 {
+			agg.ttftP95 = *current.TTFTP95Ms
 		}
-		if c.LastProbeAt != nil && (agg.lastProbe == nil || c.LastProbeAt.After(*agg.lastProbe)) {
-			agg.lastProbe = c.LastProbeAt
-		}
-		// Roll up status: worst status wins, and lowest score.
-		if rank(c.HealthStatus) > rank(agg.status) {
-			agg.status = c.HealthStatus
-		}
-		if c.HealthScore < agg.score {
-			agg.score = c.HealthScore
-		}
-		if c.MainIssue != nil && *c.MainIssue != "" && agg.mainIssue == "" {
-			agg.mainIssue = *c.MainIssue
-		}
-		if c.Recommendation != nil && *c.Recommendation != "" && agg.recommendation == "" {
-			agg.recommendation = *c.Recommendation
-		}
-		if c.LatencyP95Ms != nil {
-			totalP95 += *c.LatencyP95Ms
-			p95Count++
+		if current.LastProbeAt != nil && (agg.lastProbe == nil || current.LastProbeAt.After(*agg.lastProbe)) {
+			agg.lastProbe = current.LastProbeAt
 		}
 	}
 
+	providerIDs := make([]string, 0, len(byProvider))
+	for provider := range byProvider {
+		providerIDs = append(providerIDs, provider)
+	}
+	sort.Strings(providerIDs)
+
+	summary := map[string]int64{
+		"healthy": 0, "degraded": 0, "unhealthy": 0, "unknown": 0, "disabled": 0,
+		"fallbacks": 0,
+	}
+	if s.providerHealth != nil {
+		summary["telemetry_dropped"] = int64(s.providerHealth.DroppedEvents())
+	}
 	providers := make([]map[string]any, 0, len(byProvider))
-	for _, agg := range byProvider {
+	var totalProviderP95 int
+	var providerP95Count int
+	for _, provider := range providerIDs {
+		agg := byProvider[provider]
+		summary[agg.status]++
+		summary["fallbacks"] += agg.fallbacks
+		if agg.latencyP95 > 0 {
+			totalProviderP95 += agg.latencyP95
+			providerP95Count++
+		}
+		if statusFilter != "" && agg.status != statusFilter {
+			continue
+		}
+		successRate, errorRate := 0.0, 0.0
+		if agg.requests > 0 {
+			successRate = agg.successes / float64(agg.requests) * 100
+			errorRate = agg.failures / float64(agg.requests) * 100
+		}
 		entry := map[string]any{
 			"provider":         agg.provider,
 			"status":           agg.status,
 			"score":            agg.score,
 			"accounts":         len(agg.accounts),
 			"models_monitored": len(agg.models),
-			"success_rate":     pct(agg.successes, agg.requests),
-			"error_rate":       pct(agg.failures, agg.requests),
+			"success_rate":     successRate,
+			"error_rate":       errorRate,
 			"latency_p95_ms":   agg.latencyP95,
 			"ttft_p95_ms":      agg.ttftP95,
 			"fallback_count":   agg.fallbacks,
@@ -177,18 +203,35 @@ func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	avgP95 := 0
-	if p95Count > 0 {
-		avgP95 = totalP95 / p95Count
+	if providerP95Count > 0 {
+		avgP95 = totalProviderP95 / providerP95Count
+	}
+	generatedAt := time.Now().UTC()
+	windowDuration := time.Duration(0)
+	if s.providerHealth != nil {
+		windowDuration = s.providerHealth.RollingWindow()
+	}
+	window := map[string]any{
+		"kind":             "rolling_current",
+		"duration_seconds": int64(windowDuration.Seconds()),
+		"requested_range":  requestedRange,
+		"generated_at":     generatedAt,
+	}
+	if windowDuration > 0 {
+		window["since"] = generatedAt.Add(-windowDuration)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"window": window,
 		"summary": map[string]any{
-			"healthy":           summary["healthy"],
-			"degraded":          summary["degraded"],
-			"unhealthy":         summary["unhealthy"],
-			"unknown":           summary["unknown"],
-			"disabled":          summary["disabled"],
-			"fallbacks":         summary["fallbacks"],
-			"avg_p95_latency_ms": avgP95,
+			"healthy":                 summary["healthy"],
+			"degraded":                summary["degraded"],
+			"unhealthy":               summary["unhealthy"],
+			"unknown":                 summary["unknown"],
+			"disabled":                summary["disabled"],
+			"fallbacks":               summary["fallbacks"],
+			"avg_p95_latency_ms":      avgP95,
+			"telemetry_dropped":       summary["telemetry_dropped"],
+			"telemetry_dropped_scope": "process_lifetime",
 		},
 		"providers": providers,
 	})
@@ -260,12 +303,12 @@ func (s *Server) adminHealthProviderDetail(w http.ResponseWriter, r *http.Reques
 		"main_issue":     mainIssue,
 		"recommendation": recommendation,
 		"metrics": map[string]any{
-			"requests":        requests,
-			"success_rate":    pct(successes, requests),
-			"error_rate":      pct(failures, requests),
-			"latency_p95_ms":  lp95,
-			"ttft_p95_ms":     ttft95,
-			"fallback_count":  fallbacks,
+			"requests":       requests,
+			"success_rate":   pct(successes, requests),
+			"error_rate":     pct(failures, requests),
+			"latency_p95_ms": lp95,
+			"ttft_p95_ms":    ttft95,
+			"fallback_count": fallbacks,
 		},
 		"error_breakdown": errBreakdown,
 		"models":          rows,
@@ -354,13 +397,13 @@ func (s *Server) adminHealthChains(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		entry := map[string]any{
-			"chain_id":           c.ID,
-			"name":               c.Name,
-			"status":             worstStatus,
-			"affected_provider":  affectedProvider,
-			"affected_model":     affectedModel,
-			"main_issue":         mainIssue,
-			"step_count":         len(c.Steps),
+			"chain_id":          c.ID,
+			"name":              c.Name,
+			"status":            worstStatus,
+			"affected_provider": affectedProvider,
+			"affected_model":    affectedModel,
+			"main_issue":        mainIssue,
+			"step_count":        len(c.Steps),
 		}
 		if st, ok := chainStats[c.ID]; ok {
 			entry["requests"] = st.Requests
@@ -412,11 +455,11 @@ func (s *Server) adminHealthChainDetail(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		steps = append(steps, map[string]any{
-			"position":  step.Position,
-			"provider":  step.Provider,
-			"model":     step.Model,
-			"status":    status,
-			"score":     score,
+			"position":   step.Position,
+			"provider":   step.Provider,
+			"model":      step.Model,
+			"status":     status,
+			"score":      score,
 			"main_issue": mainIssue,
 		})
 	}

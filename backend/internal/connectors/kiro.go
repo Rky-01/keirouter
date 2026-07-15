@@ -788,6 +788,7 @@ func estimateKiroUsage(req *core.ChatRequest, outputChars int) *core.Usage {
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
 		TotalTokens:      prompt + completion,
+		Source:           core.UsageSourceEstimated,
 	}
 }
 
@@ -871,6 +872,7 @@ func parseKiroUsage(eventType string, payload []byte) *core.Usage {
 		PromptTokens:     p.InputTokens,
 		CompletionTokens: p.OutputTokens,
 		TotalTokens:      p.InputTokens + p.OutputTokens,
+		Source:           core.UsageSourceProvider,
 	}
 }
 

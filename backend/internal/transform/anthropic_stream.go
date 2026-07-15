@@ -2,8 +2,9 @@ package transform
 
 import (
 	"bytes"
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
+
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -28,10 +29,10 @@ type antStreamEvent struct {
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
 	ContentBlock struct {
-		Type  string `json:"type"`
-		ID    string `json:"id"`
-		Name  string `json:"name"`
-		Text  string `json:"text"`
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Text string `json:"text"`
 	} `json:"content_block"`
 	Usage *struct {
 		InputTokens              int `json:"input_tokens"`
@@ -100,13 +101,16 @@ func (AnthropicCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk
 			})
 		}
 		if ev.Usage != nil {
+			promptTokens := ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens + ev.Usage.CacheCreationInputTokens
 			chunks = append(chunks, core.StreamChunk{
 				Type: core.ChunkUsage,
 				Usage: &core.Usage{
-					CompletionTokens:  ev.Usage.OutputTokens,
-					PromptTokens:      ev.Usage.InputTokens,
-					CachedTokens:      ev.Usage.CacheReadInputTokens,
-					CacheWriteTokens:  ev.Usage.CacheCreationInputTokens,
+					CompletionTokens: ev.Usage.OutputTokens,
+					PromptTokens:     promptTokens,
+					TotalTokens:      promptTokens + ev.Usage.OutputTokens,
+					CachedTokens:     ev.Usage.CacheReadInputTokens,
+					CacheWriteTokens: ev.Usage.CacheCreationInputTokens,
+					Source:           core.UsageSourceProvider,
 				},
 			})
 		}
@@ -114,13 +118,16 @@ func (AnthropicCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk
 
 	case "message_start":
 		if ev.Message != nil {
+			promptTokens := ev.Message.Usage.InputTokens + ev.Message.Usage.CacheReadInputTokens + ev.Message.Usage.CacheCreationInputTokens
 			return []core.StreamChunk{{
 				Type: core.ChunkUsage,
 				Usage: &core.Usage{
-					PromptTokens:      ev.Message.Usage.InputTokens,
-					CompletionTokens:  ev.Message.Usage.OutputTokens,
-					CachedTokens:      ev.Message.Usage.CacheReadInputTokens,
-					CacheWriteTokens:  ev.Message.Usage.CacheCreationInputTokens,
+					PromptTokens:     promptTokens,
+					CompletionTokens: ev.Message.Usage.OutputTokens,
+					TotalTokens:      promptTokens + ev.Message.Usage.OutputTokens,
+					CachedTokens:     ev.Message.Usage.CacheReadInputTokens,
+					CacheWriteTokens: ev.Message.Usage.CacheCreationInputTokens,
+					Source:           core.UsageSourceProvider,
 				},
 			}}, nil
 		}

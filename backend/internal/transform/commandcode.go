@@ -3,9 +3,10 @@ package transform
 import (
 	"bytes"
 	"fmt"
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"strings"
 	"time"
+
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/google/uuid"
 
@@ -331,6 +332,7 @@ func ccUsageChunk(u *ccUsage) core.StreamChunk {
 			PromptTokens:     u.InputTokens,
 			CompletionTokens: u.OutputTokens,
 			TotalTokens:      total,
+			Source:           core.UsageSourceProvider,
 		},
 	}
 }

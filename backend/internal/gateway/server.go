@@ -5,6 +5,7 @@
 package gateway
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -43,98 +44,100 @@ import (
 
 // Server holds the gateway's dependencies and HTTP routes.
 type Server struct {
-	cfg             config.Config
-	log             *slog.Logger
-	db              *store.DB
-	identity        *identity.Service
-	auth            *auth.Service
-	pipeline        *pipeline.Pipeline
-	conns           *connectors.Registry
-	chains          *store.ChainRepo
-	aliases         *store.AliasRepo
-	accounts        *store.AccountRepo
-	pools           *store.ProxyPoolRepo
-	budgets         *store.BudgetRepo
-	budgetEngine    *budget.Engine
-	usage           *store.UsageRepo
-	resources       *store.ResourceRepo
-	settings        *store.SettingsRepo
-	vault           *vault.Vault
-	codecs          *transform.Registry
-	metrics         *observ.Metrics
-	consoleLog      *consolelog.Buffer
-	cliTools        *clitools.Registry
-	cliToolHome     string
-	frontendDir     string
-	dataDir         string
-	oauthSessions   *oauth.SessionStore
-	cfManager       *cloudflare.Manager
-	tsManager       *tailscale.Manager
-	usageHub        *usagehub.Hub
-	timeoutNotifier *TimeoutNotifier
-	proxyNotifier   *ProxyNotifier
-	rateLimiter     interface{ SetEnabled(bool) }
-	refresher       dispatch.TokenRefresher
-	version         string
-	updates         *update.Checker
-	insightsCache   *ttlCache
+	cfg                 config.Config
+	log                 *slog.Logger
+	db                  *store.DB
+	identity            *identity.Service
+	auth                *auth.Service
+	pipeline            *pipeline.Pipeline
+	conns               *connectors.Registry
+	chains              *store.ChainRepo
+	aliases             *store.AliasRepo
+	accounts            *store.AccountRepo
+	pools               *store.ProxyPoolRepo
+	budgets             *store.BudgetRepo
+	budgetEngine        *budget.Engine
+	usage               *store.UsageRepo
+	resources           *store.ResourceRepo
+	settings            *store.SettingsRepo
+	vault               *vault.Vault
+	codecs              *transform.Registry
+	metrics             *observ.Metrics
+	consoleLog          *consolelog.Buffer
+	cliTools            *clitools.Registry
+	cliToolHome         string
+	frontendDir         string
+	dataDir             string
+	oauthSessions       *oauth.SessionStore
+	cfManager           *cloudflare.Manager
+	tsManager           *tailscale.Manager
+	usageHub            *usagehub.Hub
+	timeoutNotifier     *TimeoutNotifier
+	proxyNotifier       *ProxyNotifier
+	rateLimiter         interface{ SetEnabled(bool) }
+	refresher           dispatch.TokenRefresher
+	reloadPricing       func(context.Context) error
+	version             string
+	updates             *update.Checker
+	insightsCache       *ttlCache
 	guardrails          *guardrails.Engine
 	guardrailRepo       *store.GuardrailRepo
 	guardrailLogs       *store.GuardrailLogRepo
 	guardrailHub        *guardrails.LogHub
 	guardrailTenantFlag *guardrails.SettingsTenantPolicy
 	guardrailTestRL     *guardrailTestRateLimiter
-	health          *store.HealthRepo
-	healthChecker   *healthcheck.Checker
-	providerHealth  *health.Service
-	probeRunner     *health.ProbeRunner
-	router          chi.Router
+	health              *store.HealthRepo
+	healthChecker       *healthcheck.Checker
+	providerHealth      *health.Service
+	probeRunner         *health.ProbeRunner
+	router              chi.Router
 }
 
 // Deps bundles the gateway's collaborators.
 type Deps struct {
-	Config          config.Config
-	Logger          *slog.Logger
-	Version         string
-	Updates         *update.Checker
-	DB              *store.DB
-	Identity        *identity.Service
-	Auth            *auth.Service
-	Pipeline        *pipeline.Pipeline
-	Conns           *connectors.Registry
-	Chains          *store.ChainRepo
-	Aliases         *store.AliasRepo
-	Accounts        *store.AccountRepo
-	Pools           *store.ProxyPoolRepo
-	Budgets         *store.BudgetRepo
-	BudgetEngine    *budget.Engine
-	Usage           *store.UsageRepo
-	Resources       *store.ResourceRepo
-	Settings        *store.SettingsRepo
-	Vault           *vault.Vault
-	Codecs          *transform.Registry
-	Metrics         *observ.Metrics
-	ConsoleLog      *consolelog.Buffer
-	CLITools        *clitools.Registry
-	CLITHome        string
-	FrontendDir     string
-	DataDir         string
-	CfManager       *cloudflare.Manager
-	TsManager       *tailscale.Manager
-	UsageHub        *usagehub.Hub
-	TimeoutNotifier *TimeoutNotifier
-	ProxyNotifier   *ProxyNotifier
-	RateLimiter     interface{ SetEnabled(bool) }
-	Refresher       dispatch.TokenRefresher
+	Config               config.Config
+	Logger               *slog.Logger
+	Version              string
+	Updates              *update.Checker
+	DB                   *store.DB
+	Identity             *identity.Service
+	Auth                 *auth.Service
+	Pipeline             *pipeline.Pipeline
+	Conns                *connectors.Registry
+	Chains               *store.ChainRepo
+	Aliases              *store.AliasRepo
+	Accounts             *store.AccountRepo
+	Pools                *store.ProxyPoolRepo
+	Budgets              *store.BudgetRepo
+	BudgetEngine         *budget.Engine
+	Usage                *store.UsageRepo
+	Resources            *store.ResourceRepo
+	Settings             *store.SettingsRepo
+	Vault                *vault.Vault
+	Codecs               *transform.Registry
+	Metrics              *observ.Metrics
+	ConsoleLog           *consolelog.Buffer
+	CLITools             *clitools.Registry
+	CLITHome             string
+	FrontendDir          string
+	DataDir              string
+	CfManager            *cloudflare.Manager
+	TsManager            *tailscale.Manager
+	UsageHub             *usagehub.Hub
+	TimeoutNotifier      *TimeoutNotifier
+	ProxyNotifier        *ProxyNotifier
+	RateLimiter          interface{ SetEnabled(bool) }
+	Refresher            dispatch.TokenRefresher
+	ReloadPricing        func(context.Context) error
 	Guardrails           *guardrails.Engine
 	GuardrailRepo        *store.GuardrailRepo
 	GuardrailLogs        *store.GuardrailLogRepo
 	GuardrailHub         *guardrails.LogHub
 	GuardrailTenantFlags *guardrails.SettingsTenantPolicy
-	Health          *store.HealthRepo
-	HealthChecker   *healthcheck.Checker
-	ProviderHealth  *health.Service
-	ProbeRunner     *health.ProbeRunner
+	Health               *store.HealthRepo
+	HealthChecker        *healthcheck.Checker
+	ProviderHealth       *health.Service
+	ProbeRunner          *health.ProbeRunner
 }
 
 // New builds a gateway Server and wires its routes.
@@ -156,51 +159,52 @@ func New(d Deps) *Server {
 		conLog = consolelog.New()
 	}
 	s := &Server{
-		cfg:             d.Config,
-		log:             log,
-		db:              d.DB,
-		identity:        d.Identity,
-		auth:            d.Auth,
-		pipeline:        d.Pipeline,
-		conns:           d.Conns,
-		chains:          d.Chains,
-		aliases:         d.Aliases,
-		accounts:        d.Accounts,
-		pools:           d.Pools,
-		budgets:         d.Budgets,
-		budgetEngine:    d.BudgetEngine,
-		usage:           d.Usage,
-		resources:       d.Resources,
-		settings:        d.Settings,
-		vault:           d.Vault,
-		codecs:          d.Codecs,
-		metrics:         d.Metrics,
-		consoleLog:      conLog,
-		cliTools:        cliTools,
-		cliToolHome:     cliToolHome,
-		frontendDir:     d.FrontendDir,
-		dataDir:         d.DataDir,
-		oauthSessions:   oauth.NewSessionStore(),
-		cfManager:       d.CfManager,
-		tsManager:       d.TsManager,
-		usageHub:        d.UsageHub,
-		timeoutNotifier: d.TimeoutNotifier,
-		proxyNotifier:   d.ProxyNotifier,
-		rateLimiter:     d.RateLimiter,
-		refresher:       d.Refresher,
-		version:         d.Version,
-		updates:         d.Updates,
-		insightsCache:   newTTLCache(insightsCacheTTL),
+		cfg:                 d.Config,
+		log:                 log,
+		db:                  d.DB,
+		identity:            d.Identity,
+		auth:                d.Auth,
+		pipeline:            d.Pipeline,
+		conns:               d.Conns,
+		chains:              d.Chains,
+		aliases:             d.Aliases,
+		accounts:            d.Accounts,
+		pools:               d.Pools,
+		budgets:             d.Budgets,
+		budgetEngine:        d.BudgetEngine,
+		usage:               d.Usage,
+		resources:           d.Resources,
+		settings:            d.Settings,
+		vault:               d.Vault,
+		codecs:              d.Codecs,
+		metrics:             d.Metrics,
+		consoleLog:          conLog,
+		cliTools:            cliTools,
+		cliToolHome:         cliToolHome,
+		frontendDir:         d.FrontendDir,
+		dataDir:             d.DataDir,
+		oauthSessions:       oauth.NewSessionStore(),
+		cfManager:           d.CfManager,
+		tsManager:           d.TsManager,
+		usageHub:            d.UsageHub,
+		timeoutNotifier:     d.TimeoutNotifier,
+		proxyNotifier:       d.ProxyNotifier,
+		rateLimiter:         d.RateLimiter,
+		refresher:           d.Refresher,
+		reloadPricing:       d.ReloadPricing,
+		version:             d.Version,
+		updates:             d.Updates,
+		insightsCache:       newTTLCache(insightsCacheTTL),
 		guardrails:          d.Guardrails,
 		guardrailRepo:       d.GuardrailRepo,
 		guardrailLogs:       d.GuardrailLogs,
 		guardrailHub:        d.GuardrailHub,
 		guardrailTenantFlag: d.GuardrailTenantFlags,
 		guardrailTestRL:     newGuardrailTestRateLimiter(10, time.Minute),
-		health:          d.Health,
-		healthChecker:   d.HealthChecker,
-		providerHealth:  d.ProviderHealth,
-		probeRunner:     d.ProbeRunner,
+		health:              d.Health,
+		healthChecker:       d.HealthChecker,
+		providerHealth:      d.ProviderHealth,
+		probeRunner:         d.ProbeRunner,
 	}
 	s.router = s.routes()
 	startSystemCollector(d.Resources)

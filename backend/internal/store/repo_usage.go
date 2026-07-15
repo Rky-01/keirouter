@@ -38,9 +38,17 @@ func (r *UsageRepo) RecordBatch(ctx context.Context, records []UsageRecord) erro
 	// PostgreSQL accepts at most 65,535 bind parameters; SQLite builds used by
 	// KeiRouter allow 32,766. Keep each statement below both limits while one
 	// transaction preserves all-or-nothing batch semantics.
-	maxRows := 1000
+	const (
+		postgresBindLimit = 65535
+		sqliteBindLimit   = 32766
+	)
+	argsPerRow := len(usageArgs(UsageRecord{}))
+	maxRows := sqliteBindLimit / argsPerRow
 	if r.db.dialect == DialectPostgres {
-		maxRows = 2400
+		maxRows = postgresBindLimit / argsPerRow
+	}
+	if maxRows < 1 {
+		maxRows = 1
 	}
 	for start := 0; start < len(records); start += maxRows {
 		end := min(start+maxRows, len(records))
@@ -54,22 +62,30 @@ func (r *UsageRepo) RecordBatch(ctx context.Context, records []UsageRecord) erro
 	return nil
 }
 
+const usageColumns = `id, request_id, tenant_id, project_id, api_key_id, provider, model, account_id, client,
+	status, error_kind, prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
+	reasoning_tokens, usage_source, cost_micros, cost_nanos, input_cost_nanos, cached_cost_nanos,
+	cache_write_cost_nanos, output_cost_nanos, reasoning_cost_nanos, avoided_cost_nanos, saved_cost_nanos,
+	pricing_status, pricing_source, pricing_key, pricing_match_kind, pricing_source_url,
+	pricing_as_of, pricing_backfilled, input_rate_per_m, cached_rate_per_m,
+	cache_write_rate_per_m, output_rate_per_m, reasoning_rate_per_m, cache_hit, latency_ms,
+	upstream_latency_ms, end_to_end_latency_ms, ttft_ms, slim_bytes_saved, slim_tokens_saved,
+	slim_rules, slim_active, caveman_active, terse_active, headroom_tokens_saved,
+	headroom_bytes_saved, headroom_active, ponytail_active, created_at`
+
 func insertUsageBatch(ctx context.Context, tx *sql.Tx, rebind func(string) string, records []UsageRecord) error {
-	const cols = 27
+	argsPerRow := len(usageArgs(UsageRecord{}))
+	rowPlaceholders := "(" + strings.TrimSuffix(strings.Repeat("?,", argsPerRow), ",") + ")"
 	var b strings.Builder
-	b.WriteString(`INSERT INTO usage_records
-		(id, tenant_id, project_id, api_key_id, provider, model, account_id, client,
-		 prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
-		 cost_micros, cache_hit, latency_ms, ttft_ms,
-		 slim_bytes_saved, slim_tokens_saved, slim_rules, slim_active, caveman_active, terse_active,
-		 headroom_tokens_saved, headroom_bytes_saved, headroom_active, ponytail_active,
-		 created_at) VALUES `)
-	args := make([]any, 0, len(records)*cols)
+	b.WriteString("INSERT INTO usage_records (")
+	b.WriteString(usageColumns)
+	b.WriteString(") VALUES ")
+	args := make([]any, 0, len(records)*argsPerRow)
 	for i, u := range records {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		b.WriteString(rowPlaceholders)
 		args = append(args, usageArgs(u)...)
 	}
 	if _, err := tx.ExecContext(ctx, rebind(b.String()), args...); err != nil {
@@ -81,26 +97,35 @@ func insertUsageBatch(ctx context.Context, tx *sql.Tx, rebind func(string) strin
 func insertUsage(ctx context.Context, exec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, rebind func(string) string, u UsageRecord) error {
-	q := rebind(`
-		INSERT INTO usage_records
-			(id, tenant_id, project_id, api_key_id, provider, model, account_id, client,
-			 prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
-			 cost_micros, cache_hit, latency_ms, ttft_ms,
-			 slim_bytes_saved, slim_tokens_saved, slim_rules, slim_active, caveman_active, terse_active,
-			 headroom_tokens_saved, headroom_bytes_saved, headroom_active, ponytail_active,
-			 created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	_, err := exec.ExecContext(ctx, q, usageArgs(u)...)
+	args := usageArgs(u)
+	placeholders := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	q := rebind("INSERT INTO usage_records (" + usageColumns + ") VALUES " + placeholders)
+	_, err := exec.ExecContext(ctx, q, args...)
 	return err
 }
 
 func usageArgs(u UsageRecord) []any {
+	// Keep legacy direct callers lossless while cost_nanos is the authoritative
+	// storage unit. Rounding happens once at the compatibility boundary.
+	if u.CostNanos == 0 && u.CostMicros != 0 {
+		u.CostNanos = u.CostMicros * 1000
+	}
+	if u.CostMicros == 0 && u.CostNanos != 0 {
+		u.CostMicros = (u.CostNanos + 500) / 1000
+	}
 	return []any{
-		u.ID, u.TenantID, nullString(u.ProjectID), nullString(u.APIKeyID),
-		u.Provider, u.Model, nullString(u.AccountID), u.Client,
+		u.ID, u.RequestID, u.TenantID, nullString(u.ProjectID), nullString(u.APIKeyID),
+		u.Provider, u.Model, nullString(u.AccountID), u.Client, u.Status, u.ErrorKind,
 		u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.CacheWriteTokens,
-		u.CostMicros, boolToInt(u.CacheHit), u.LatencyMS, u.TTFTMS,
-		u.SlimBytesSaved, u.SlimTokensSaved, u.SlimRules, boolToInt(u.SlimActive), boolToInt(u.CavemanActive), boolToInt(u.TerseActive),
+		u.ReasoningTokens, u.UsageSource, u.CostMicros, u.CostNanos,
+		u.InputCostNanos, u.CachedCostNanos, u.CacheWriteCostNanos, u.OutputCostNanos,
+		u.ReasoningCostNanos, u.AvoidedCostNanos, u.SavedCostNanos,
+		u.PricingStatus, u.PricingSource, u.PricingKey, u.PricingMatchKind, u.PricingSourceURL,
+		nullTime(u.PricingAsOf), boolToInt(u.PricingBackfilled),
+		u.InputRatePerM, u.CachedRatePerM, u.CacheWriteRatePerM, u.OutputRatePerM, u.ReasoningRatePerM,
+		boolToInt(u.CacheHit), u.LatencyMS, u.UpstreamLatencyMS, u.EndToEndLatencyMS, u.TTFTMS,
+		u.SlimBytesSaved, u.SlimTokensSaved, u.SlimRules,
+		boolToInt(u.SlimActive), boolToInt(u.CavemanActive), boolToInt(u.TerseActive),
 		u.HeadroomTokensSaved, u.HeadroomBytesSaved, boolToInt(u.HeadroomActive), boolToInt(u.PonytailActive),
 		formatTime(u.CreatedAt),
 	}
@@ -115,7 +140,7 @@ func (r *UsageRepo) SpendSince(ctx context.Context, scope BudgetScope, scopeID s
 	}
 
 	q := r.db.rebind(fmt.Sprintf(
-		`SELECT COALESCE(SUM(cost_micros), 0) FROM usage_records WHERE %s = ? AND created_at >= ?`,
+		`SELECT (COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000 FROM usage_records WHERE %s = ? AND created_at >= ?`,
 		column))
 	var total int64
 	if err := r.db.sql.QueryRowContext(ctx, q, scopeID, formatTime(since)).Scan(&total); err != nil {
@@ -134,7 +159,7 @@ func (r *UsageRepo) SpendAndTokens(ctx context.Context, scope BudgetScope, scope
 	}
 
 	q := r.db.rebind(fmt.Sprintf(
-		`SELECT COALESCE(SUM(cost_micros), 0), COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+		`SELECT (COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000, COALESCE(SUM(prompt_tokens + completion_tokens), 0)
 		 FROM usage_records WHERE %s = ? AND created_at >= ?`,
 		column))
 	if err := r.db.sql.QueryRowContext(ctx, q, scopeID, formatTime(since)).Scan(&costMicros, &tokens); err != nil {
@@ -177,7 +202,7 @@ func (r *UsageRepo) SpendAndTokensBatch(ctx context.Context, scopes []SpendScope
 			query += " UNION ALL "
 		}
 		query += fmt.Sprintf(
-			"SELECT COALESCE(SUM(cost_micros), 0), COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM usage_records WHERE %s = ? AND created_at >= ?",
+			"SELECT (COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000, COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM usage_records WHERE %s = ? AND created_at >= ?",
 			column)
 		args = append(args, s.ScopeID, formatTime(s.Since))
 	}
@@ -244,7 +269,7 @@ func (r *UsageRepo) Summarize(ctx context.Context, tenantID string, since time.T
 			COALESCE(SUM(completion_tokens), 0),
 			COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
-			COALESCE(SUM(cost_micros), 0),
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000,
 			COALESCE(SUM(cache_hit), 0),
 			COALESCE(CAST(AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END) AS INTEGER), 0),
 			COALESCE(CAST(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS INTEGER), 0),
@@ -281,7 +306,7 @@ func (r *UsageRepo) SummarizeByKey(ctx context.Context, keyID string, since time
 			COALESCE(SUM(completion_tokens), 0),
 			COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
-			COALESCE(SUM(cost_micros), 0),
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000,
 			COALESCE(SUM(cache_hit), 0),
 			COALESCE(CAST(AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END) AS INTEGER), 0),
 			COALESCE(CAST(AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS INTEGER), 0),
@@ -327,7 +352,7 @@ func (r *UsageRepo) Breakdown(ctx context.Context, tenantID string, since time.T
 			COUNT(*),
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(cost_micros), 0)
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ?
 		GROUP BY provider
@@ -450,7 +475,7 @@ func (r *UsageRepo) ByAccount(ctx context.Context, tenantID string, since time.T
 			COALESCE(SUM(completion_tokens), 0),
 			COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
-			COALESCE(SUM(cost_micros), 0)
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ?
 		GROUP BY account_id`)
@@ -493,7 +518,7 @@ func (r *UsageRepo) ByModel(ctx context.Context, tenantID string, since time.Tim
 			COUNT(*),
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(cost_micros), 0)
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ?
 		GROUP BY provider, model
@@ -526,7 +551,7 @@ func (r *UsageRepo) ByModelByKey(ctx context.Context, keyID string, since time.T
 			COUNT(*),
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(cost_micros), 0)
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000
 		FROM usage_records
 		WHERE api_key_id = ? AND created_at >= ?
 		GROUP BY provider, model
@@ -622,7 +647,7 @@ func (r *UsageRepo) DailyByKey(ctx context.Context, keyID string, since time.Tim
 			COUNT(*),
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(cost_micros), 0)
+			(COALESCE(SUM(CASE WHEN pricing_backfilled=0 THEN cost_nanos ELSE 0 END), 0) + 500) / 1000
 		FROM usage_records
 		WHERE api_key_id = ? AND created_at >= ?
 		GROUP BY day
@@ -714,6 +739,9 @@ type ClientSavings struct {
 
 	HeadroomTokensSaved int64 // tokens saved by Headroom
 	PonytailRequests    int64 // requests where Ponytail was active
+	OptimizedRequests   int64 // distinct rows where any optimization was active
+	SavedCostNanos      int64 // input compression savings from immutable snapshots
+	AvoidedCostNanos    int64 // semantic-cache avoided cost from immutable snapshots
 }
 
 // SavingsByClient returns per-client optimization savings for a tenant since
@@ -729,11 +757,14 @@ func (r *UsageRepo) SavingsByClient(ctx context.Context, tenantID string, since 
 			COALESCE(SUM(caveman_active), 0),
 			COALESCE(SUM(terse_active), 0),
 			COALESCE(SUM(headroom_tokens_saved), 0),
-			COALESCE(SUM(ponytail_active), 0)
+			COALESCE(SUM(ponytail_active), 0),
+			COALESCE(SUM(CASE WHEN slim_active=1 OR headroom_active=1 OR caveman_active=1 OR terse_active=1 OR ponytail_active=1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(saved_cost_nanos), 0),
+			COALESCE(SUM(avoided_cost_nanos), 0)
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ?
 		GROUP BY client
-		ORDER BY COALESCE(SUM(slim_tokens_saved), 0) DESC`)
+		ORDER BY COALESCE(SUM(slim_tokens_saved + headroom_tokens_saved), 0) DESC`)
 	rows, err := r.db.sql.QueryContext(ctx, q, tenantID, formatTime(since))
 	if err != nil {
 		return nil, fmt.Errorf("store: savings by client: %w", err)
@@ -745,7 +776,8 @@ func (r *UsageRepo) SavingsByClient(ctx context.Context, tenantID string, since 
 		var c ClientSavings
 		if err := rows.Scan(&c.Client, &c.Requests, &c.SlimBytesSaved,
 			&c.SlimTokensSaved, &c.CavemanRequests, &c.TerseRequests,
-			&c.HeadroomTokensSaved, &c.PonytailRequests); err != nil {
+			&c.HeadroomTokensSaved, &c.PonytailRequests, &c.OptimizedRequests,
+			&c.SavedCostNanos, &c.AvoidedCostNanos); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

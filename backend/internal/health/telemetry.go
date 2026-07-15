@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,11 +35,11 @@ type ProviderTelemetryEvent struct {
 	ErrorType    ProviderErrorType
 	ErrorMessage string
 
-	ChainID           string
-	FallbackTriggered bool
+	ChainID            string
+	FallbackTriggered  bool
 	FallbackToProvider string
 	FallbackToModel    string
-	FinalFailure      bool
+	FinalFailure       bool
 }
 
 // LatencyThresholds maps a capability to its p95 latency threshold in ms.
@@ -93,8 +94,8 @@ type Config struct {
 // All recording is best-effort: a full queue or a DB write failure logs a
 // warning and continues. The gateway request path never blocks on telemetry.
 type Service struct {
-	cfg Config
-	log *slog.Logger
+	cfg  Config
+	log  *slog.Logger
 	repo *store.ProviderHealthRepo
 
 	ch      chan ProviderTelemetryEvent
@@ -102,52 +103,55 @@ type Service struct {
 	done    chan struct{}
 	started bool
 
-	mu     sync.Mutex // guards states + chains maps
-	states map[string]*keyState
-	chains map[string]*chainState // key = chain_id
+	mu      sync.Mutex // guards states + chains maps
+	states  map[string]*keyState
+	chains  map[string]*chainState // key = chain_id
+	dropped atomic.Uint64
 }
 
 // chainState rolls up telemetry across all providers in one chain so the
 // dashboard can show fallback rate and final-failure count per chain.
 type chainState struct {
-	chainID      string
-	buckets      map[int64]*chainBucket // key = unix minute
-	lastUpdated  time.Time
+	chainID     string
+	buckets     map[int64]*chainBucket // key = unix minute
+	lastUpdated time.Time
 }
 
 type chainBucket struct {
-	minute      time.Time
-	requests    int64
-	successes   int64
-	failures    int64
-	fallbacks   int64
-	finalFails  int64
+	minute     time.Time
+	requests   int64
+	successes  int64
+	failures   int64
+	fallbacks  int64
+	finalFails int64
 }
 
 type keyState struct {
-	provider          string
-	account           string
-	model             string
-	capability        string
-	buckets           map[int64]*minuteBucket // key = unix minute
+	provider            string
+	account             string
+	model               string
+	capability          string
+	buckets             map[int64]*minuteBucket // key = unix minute
 	consecutiveFailures int
-	lastSuccess       *time.Time
-	lastFailure       *time.Time
+	lastSuccess         *time.Time
+	lastFailure         *time.Time
 }
 
 type minuteBucket struct {
-	minute      time.Time
-	requests    int64
-	successes   int64
-	failures    int64
-	fallbacks   int64
-	finalFails  int64
-	inputTokens int64
-	outputTokens int64
-	costMicros  int64
-	latencies   []int
-	ttfts       []int
-	errCounts   map[ProviderErrorType]int64
+	minute              time.Time
+	revision            uint64
+	snapshottedRevision uint64
+	requests            int64
+	successes           int64
+	failures            int64
+	fallbacks           int64
+	finalFails          int64
+	inputTokens         int64
+	outputTokens        int64
+	costMicros          int64
+	latencies           []int
+	ttfts               []int
+	errCounts           map[ProviderErrorType]int64
 }
 
 // New builds a health telemetry Service. The caller must call Start to launch
@@ -197,23 +201,43 @@ func (s *Service) Record(ev ProviderTelemetryEvent) {
 	select {
 	case s.ch <- ev:
 	default:
+		s.dropped.Add(1)
 		s.log.Debug("health telemetry queue full; dropping event",
 			"provider", ev.Provider, "model", ev.Model)
 	}
 }
 
+// DroppedEvents reports telemetry events lost because the non-blocking queue
+// was full. Surfacing this value lets dashboards qualify health coverage.
+func (s *Service) DroppedEvents() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.dropped.Load()
+}
+
+// RollingWindow reports the configured lookback represented by
+// provider_health_current. Dashboards must expose this actual collector window
+// instead of implying that an arbitrary requested range was applied.
+func (s *Service) RollingWindow() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.cfg.RollingWindow
+}
+
 // ChainStat is the rolled-up health of one routing chain over the rolling
 // window, used by the chain-impact view.
 type ChainStat struct {
-	ChainID         string
-	Requests        int64
-	Successes       int64
-	Failures        int64
-	Fallbacks       int64
-	FinalFailures   int64
-	FallbackRate    float64 // 0-1
+	ChainID          string
+	Requests         int64
+	Successes        int64
+	Failures         int64
+	Fallbacks        int64
+	FinalFailures    int64
+	FallbackRate     float64 // 0-1
 	FinalFailureRate float64 // 0-1
-	LastUpdated     time.Time
+	LastUpdated      time.Time
 }
 
 // ChainStats returns rolled-up per-chain stats over the rolling window. Chains
@@ -313,58 +337,70 @@ func (s *Service) run(ctx context.Context) {
 }
 
 func (s *Service) ingest(ev ProviderTelemetryEvent) {
-	key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
-	s.mu.Lock()
-	ks, ok := s.states[key]
-	if !ok {
-		ks = &keyState{
-			provider:   ev.Provider,
-			account:    ev.ProviderAccountID,
-			model:      ev.Model,
-			capability: ev.Capability,
-			buckets:    make(map[int64]*minuteBucket),
-		}
-		s.states[key] = ks
-	}
 	min := ev.Timestamp.UTC().Truncate(time.Minute)
-	bucket, ok := ks.buckets[min.Unix()]
-	if !ok {
-		bucket = &minuteBucket{minute: min, errCounts: make(map[ProviderErrorType]int64)}
-		ks.buckets[min.Unix()] = bucket
+	s.mu.Lock()
+
+	// A final-failure marker exists only to close the chain-level request. The
+	// concrete provider attempt was already recorded immediately before it;
+	// aggregating the marker again would double-count failed requests and create
+	// a second account-less provider row.
+	if ev.FinalFailure && ev.Provider != "" {
+		key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
+		if ks, ok := s.states[key]; ok {
+			if bucket, ok := ks.buckets[min.Unix()]; ok {
+				bucket.finalFails++
+				bucket.revision++
+			}
+		}
 	}
-	bucket.requests++
-	bucket.inputTokens += int64(ev.InputTokens)
-	bucket.outputTokens += int64(ev.OutputTokens)
-	bucket.costMicros += ev.CostMicroUSD
-	if ev.Status == "success" {
-		bucket.successes++
-		ks.consecutiveFailures = 0
-		now := ev.Timestamp
-		ks.lastSuccess = &now
-	} else {
-		bucket.failures++
-		bucket.errCounts[ev.ErrorType]++
-		ks.consecutiveFailures++
-		now := ev.Timestamp
-		ks.lastFailure = &now
-	}
-	if ev.FallbackTriggered && ev.Status == "failed" && !ev.FinalFailure {
-		bucket.fallbacks++
-	}
-	if ev.FinalFailure {
-		bucket.finalFails++
-	}
-	if ev.LatencyMs > 0 && len(bucket.latencies) < s.cfg.MaxSamplesPerBucket {
-		bucket.latencies = append(bucket.latencies, ev.LatencyMs)
-	}
-	if ev.TTFTMs > 0 && len(bucket.ttfts) < s.cfg.MaxSamplesPerBucket {
-		bucket.ttfts = append(bucket.ttfts, ev.TTFTMs)
+	if !ev.FinalFailure && ev.Provider != "" {
+		key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
+		ks, ok := s.states[key]
+		if !ok {
+			ks = &keyState{
+				provider:   ev.Provider,
+				account:    ev.ProviderAccountID,
+				model:      ev.Model,
+				capability: ev.Capability,
+				buckets:    make(map[int64]*minuteBucket),
+			}
+			s.states[key] = ks
+		}
+		bucket, ok := ks.buckets[min.Unix()]
+		if !ok {
+			bucket = &minuteBucket{minute: min, errCounts: make(map[ProviderErrorType]int64)}
+			ks.buckets[min.Unix()] = bucket
+		}
+		bucket.requests++
+		bucket.inputTokens += int64(ev.InputTokens)
+		bucket.outputTokens += int64(ev.OutputTokens)
+		bucket.costMicros += ev.CostMicroUSD
+		if ev.Status == "success" {
+			bucket.successes++
+			ks.consecutiveFailures = 0
+			now := ev.Timestamp
+			ks.lastSuccess = &now
+		} else {
+			bucket.failures++
+			bucket.errCounts[ev.ErrorType]++
+			ks.consecutiveFailures++
+			now := ev.Timestamp
+			ks.lastFailure = &now
+		}
+		if ev.FallbackTriggered && ev.Status == "failed" {
+			bucket.fallbacks++
+		}
+		if ev.LatencyMs > 0 && len(bucket.latencies) < s.cfg.MaxSamplesPerBucket {
+			bucket.latencies = append(bucket.latencies, ev.LatencyMs)
+		}
+		if ev.TTFTMs > 0 && len(bucket.ttfts) < s.cfg.MaxSamplesPerBucket {
+			bucket.ttfts = append(bucket.ttfts, ev.TTFTMs)
+		}
+		bucket.revision++
 	}
 
 	// Chain-level rollup: only terminal events (success or FinalFailure)
-	// count as requests. FallbackTriggered on a terminal event means the
-	// request fell back ≥1 time before completing. Non-terminal per-attempt
-	// failure events are ignored at chain level (they're not requests).
+	// count as requests. Non-terminal per-attempt failures are ignored here.
 	if ev.ChainID != "" {
 		cs, ok := s.chains[ev.ChainID]
 		if !ok {
@@ -396,6 +432,9 @@ func (s *Service) ingest(ev ProviderTelemetryEvent) {
 // flushCurrent recomputes provider_health_current for every active key from its
 // rolling window of minute buckets.
 func (s *Service) flushCurrent(ctx context.Context) {
+	if s.repo == nil {
+		return
+	}
 	s.mu.Lock()
 	now := time.Now().UTC()
 	windowStart := now.Add(-s.cfg.RollingWindow).Truncate(time.Minute)
@@ -404,32 +443,56 @@ func (s *Service) flushCurrent(ctx context.Context) {
 		keys = append(keys, ks)
 	}
 	s.mu.Unlock()
+	if err := s.repo.DeleteStaleTrafficCurrent(ctx, windowStart); err != nil {
+		s.log.Warn("stale health current cleanup failed", "err", err)
+	}
 
 	for _, ks := range keys {
 		agg := s.aggregate(ks, windowStart, now)
 		if agg.requests == 0 {
+			// Leave a concurrently refreshed probe-only row intact, but remove the
+			// expired traffic aggregate so the API cannot label it as current.
+			if err := s.repo.DeleteTrafficCurrent(ctx, ks.provider, ks.account, ks.model,
+				ks.capability, now.Add(-time.Second)); err != nil {
+				s.log.Warn("expired health current cleanup failed", "err", err,
+					"provider", ks.provider, "model", ks.model)
+			}
 			continue
 		}
 		s.upsertCurrent(ctx, ks, agg, now)
 	}
 }
 
-// flushSnapshots writes completed (elapsed) minute buckets as snapshot rows and
-// removes them from memory. When flushAll is true (shutdown), the current
-// in-progress minute is also written.
+// flushSnapshots persists completed minute buckets while retaining them through
+// the rolling window used by provider_health_current. A revision marker avoids
+// rewriting unchanged buckets; late events make a retained bucket dirty and
+// replace the same persisted snapshot on the next flush.
 func (s *Service) flushSnapshots(ctx context.Context, flushAll bool) {
+	if s.repo == nil {
+		return
+	}
 	s.mu.Lock()
-	currentMinute := time.Now().UTC().Truncate(time.Minute).Unix()
+	now := time.Now().UTC()
+	currentMinute := now.Truncate(time.Minute).Unix()
+	windowStart := now.Add(-s.cfg.RollingWindow).Truncate(time.Minute)
 	type pending struct {
-		ks     *keyState
-		minute int64
-		bucket *minuteBucket
+		ks       *keyState
+		minute   int64
+		original *minuteBucket
+		bucket   *minuteBucket
+		revision uint64
 	}
 	var toWrite []pending
 	for _, ks := range s.states {
 		for m, b := range ks.buckets {
-			if m < currentMinute || flushAll {
-				toWrite = append(toWrite, pending{ks, m, b})
+			completed := m < currentMinute || flushAll
+			if completed && b.revision != b.snapshottedRevision {
+				toWrite = append(toWrite, pending{
+					ks: ks, minute: m, original: b, bucket: cloneMinuteBucket(b), revision: b.revision,
+				})
+			}
+			if b.minute.Before(windowStart) && b.revision == b.snapshottedRevision {
+				delete(ks.buckets, m)
 			}
 		}
 	}
@@ -442,13 +505,27 @@ func (s *Service) flushSnapshots(ctx context.Context, flushAll bool) {
 			continue
 		}
 		s.mu.Lock()
-		// Re-fetch: the bucket may have been re-created since snapshot; only
-		// delete if it is the same pointer we wrote.
-		if cur, ok := p.ks.buckets[p.minute]; ok && cur == p.bucket {
-			delete(p.ks.buckets, p.minute)
+		// A late event may have changed the bucket during the DB write. Mark only
+		// the exact revision persisted so that a newer revision is retried.
+		if cur, ok := p.ks.buckets[p.minute]; ok && cur == p.original && cur.revision == p.revision {
+			cur.snapshottedRevision = p.revision
+			if cur.minute.Before(windowStart) {
+				delete(p.ks.buckets, p.minute)
+			}
 		}
 		s.mu.Unlock()
 	}
+}
+
+func cloneMinuteBucket(source *minuteBucket) *minuteBucket {
+	clone := *source
+	clone.latencies = append([]int(nil), source.latencies...)
+	clone.ttfts = append([]int(nil), source.ttfts...)
+	clone.errCounts = make(map[ProviderErrorType]int64, len(source.errCounts))
+	for errorType, count := range source.errCounts {
+		clone.errCounts[errorType] = count
+	}
+	return &clone
 }
 
 type windowAgg struct {
@@ -456,6 +533,8 @@ type windowAgg struct {
 	fallbacks, finalFails         int64
 	inputTokens, outputTokens     int64
 	costMicros                    int64
+	consecutiveFailures           int
+	lastSuccess, lastFailure      *time.Time
 	errCounts                     map[ProviderErrorType]int64
 	latencies                     []int
 	ttfts                         []int
@@ -484,10 +563,16 @@ func (s *Service) aggregate(ks *keyState, windowStart, _ time.Time) windowAgg {
 		a.latencies = append(a.latencies, b.latencies...)
 		a.ttfts = append(a.ttfts, b.ttfts...)
 	}
+	a.consecutiveFailures = ks.consecutiveFailures
+	a.lastSuccess = ks.lastSuccess
+	a.lastFailure = ks.lastFailure
 	return a
 }
 
 func (s *Service) upsertCurrent(ctx context.Context, ks *keyState, a windowAgg, now time.Time) {
+	if s.repo == nil {
+		return
+	}
 	successRate := 0.0
 	if a.requests > 0 {
 		successRate = float64(a.successes) / float64(a.requests)
@@ -506,7 +591,7 @@ func (s *Service) upsertCurrent(ctx context.Context, ks *keyState, a windowAgg, 
 		P95LatencyMs:        p95Lat,
 		LatencyThresholdMs:  threshold,
 		DominantErrorType:   dominant,
-		ConsecutiveFailures: ks.consecutiveFailures,
+		ConsecutiveFailures: a.consecutiveFailures,
 	})
 	status := StatusFromScore(score, a.requests > 0, false)
 	mainIssue := MainIssue(dominant, p95Lat, threshold, a.fallbacks)
@@ -529,9 +614,9 @@ func (s *Service) upsertCurrent(ctx context.Context, ks *keyState, a windowAgg, 
 		FallbackCount:       a.fallbacks,
 		LatencyP95Ms:        intPtr(p95Lat),
 		TTFTP95Ms:           intPtr(p95TTFT),
-		ConsecutiveFailures: ks.consecutiveFailures,
-		LastSuccessAt:       ks.lastSuccess,
-		LastFailureAt:       ks.lastFailure,
+		ConsecutiveFailures: a.consecutiveFailures,
+		LastSuccessAt:       a.lastSuccess,
+		LastFailureAt:       a.lastFailure,
 		LastUpdatedAt:       now,
 	}
 	if mainIssue != "" {

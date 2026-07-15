@@ -1,37 +1,131 @@
 package connectors
 
-// ModelPrice holds per-million-token rates for a specific model.
+import "strings"
+
+// ModelPrice holds immutable catalog metadata and per-million-token rates for a
+// specific model. Source metadata lets analytics distinguish actual list price,
+// a user-configured price, and a retail-equivalent estimate.
 type ModelPrice struct {
-	Provider        string
-	Model           string
-	InputPerM       float64 // USD per million standard input tokens
-	OutputPerM      float64 // USD per million standard output tokens
-	CachedInputPerM float64 // USD per million cache-read input tokens (0 = no cache discount)
-	CacheWritePerM  float64 // USD per million cache-write input tokens (0 = no separate rate)
-	ReasoningPerM   float64 // USD per million reasoning tokens (0 = no separate rate)
+	Provider             string
+	Model                string
+	InputPerM            float64
+	OutputPerM           float64
+	CachedInputPerM      float64
+	CacheWritePerM       float64
+	ReasoningPerM        float64
+	LongContextThreshold int
+	LongInputPerM        float64
+	LongOutputPerM       float64
+	LongCachedInputPerM  float64
+	LongCacheWritePerM   float64
+	Source               string
+	SourceURL            string
+	Estimated            bool
+	ExplicitFree         bool
 }
 
-// ModelPriceByProviderModel looks up the price for a specific provider/model pair.
+// ModelPriceByProviderModel resolves exact provider/model entries first, then
+// controlled provider aliases and finally a globally unique canonical model.
+// Iterating in reverse lets currentOfficialModelPrices override stale entries.
 func ModelPriceByProviderModel(provider, model string) (ModelPrice, bool) {
-	// Try exact "model" field match (may include provider prefix like "openai/gpt-5").
-	key := provider + "/" + model
-	for _, mp := range ModelPricingTable() {
-		if mp.Provider+"/"+mp.Model == key {
-			return mp, true
+	table := ModelPricingTable()
+	providers := []string{normalizePriceProvider(provider)}
+	if p := strings.ToLower(strings.TrimSpace(provider)); p != providers[0] {
+		providers = append(providers, p)
+	}
+	models := priceModelCandidates(model)
+	for i := len(table) - 1; i >= 0; i-- {
+		mp := table[i]
+		for _, p := range providers {
+			for _, m := range models {
+				if normalizePriceProvider(mp.Provider) == p && strings.EqualFold(mp.Model, m) {
+					return mp, true
+				}
+			}
 		}
 	}
-	// Try matching just the model suffix (e.g. model="gpt-4o" matches provider="openai", model="gpt-4o").
-	for _, mp := range ModelPricingTable() {
-		if mp.Provider == provider && mp.Model == model {
-			return mp, true
+
+	// Custom OpenAI-compatible endpoints often expose a vendor model without a
+	// billable-provider id. Use a cross-provider match only when every canonical
+	// match has the same rates; ambiguity remains visibly unpriced.
+	fingerprints := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		fingerprints[priceModelFingerprint(m)] = struct{}{}
+	}
+	seenKeys := map[string]struct{}{}
+	var found ModelPrice
+	hasFound := false
+	for i := len(table) - 1; i >= 0; i-- {
+		mp := table[i]
+		key := normalizePriceProvider(mp.Provider) + "/" + strings.ToLower(mp.Model)
+		if _, seen := seenKeys[key]; seen {
+			continue
+		}
+		seenKeys[key] = struct{}{}
+		if _, ok := fingerprints[priceModelFingerprint(mp.Model)]; !ok {
+			continue
+		}
+		if !hasFound {
+			found, hasFound = mp, true
+			continue
+		}
+		if !sameModelRates(found, mp) {
+			return ModelPrice{}, false
 		}
 	}
-	return ModelPrice{}, false
+	return found, hasFound
 }
 
-// ModelPricingTable returns accurate per-model pricing for all major providers.
-// Prices are in USD per million tokens. Cached input rates reflect each
-// provider's prompt caching discount (typically 50-75% off standard input).
+func normalizePriceProvider(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch p {
+	case "codex", "openai-codex":
+		return "openai"
+	case "claude", "claude-code":
+		return "anthropic"
+	case "gemini-cli", "antigravity":
+		return "gemini"
+	case "cloudflare", "workers-ai":
+		return "cloudflare-ai"
+	default:
+		return p
+	}
+}
+
+func priceModelCandidates(model string) []string {
+	m := strings.TrimSpace(model)
+	out := []string{m}
+	for strings.Contains(m, "/") {
+		m = strings.TrimPrefix(m[strings.IndexByte(m, '/')+1:], "/")
+		out = append(out, m)
+	}
+	for _, suffix := range []string{"-xhigh-review", "-high-review", "-low-review", "-none-review", "-review", "-xhigh", "-high", "-low", "-none"} {
+		if strings.HasSuffix(strings.ToLower(m), suffix) {
+			out = append(out, m[:len(m)-len(suffix)])
+			break
+		}
+	}
+	return out
+}
+
+func priceModelFingerprint(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndexByte(m, '/'); i >= 0 {
+		m = m[i+1:]
+	}
+	replacer := strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
+	return replacer.Replace(m)
+}
+
+func sameModelRates(a, b ModelPrice) bool {
+	return a.InputPerM == b.InputPerM && a.OutputPerM == b.OutputPerM &&
+		a.CachedInputPerM == b.CachedInputPerM && a.CacheWritePerM == b.CacheWritePerM &&
+		a.ReasoningPerM == b.ReasoningPerM && a.LongInputPerM == b.LongInputPerM &&
+		a.LongOutputPerM == b.LongOutputPerM
+}
+
+// ModelPricingTable returns the built-in catalog. Later entries override older
+// compatibility entries when provider/model keys collide.
 func ModelPricingTable() []ModelPrice {
 	var out []ModelPrice
 	out = append(out, openaiModelPrices()...)
@@ -53,6 +147,7 @@ func ModelPricingTable() []ModelPrice {
 	out = append(out, glmModelPrices()...)
 	out = append(out, mimoModelPrices()...)
 	out = append(out, kiroModelPrices()...)
+	out = append(out, currentOfficialModelPrices()...)
 	return out
 }
 
@@ -299,18 +394,27 @@ func nvidiaModelPrices() []ModelPrice {
 }
 
 func openrouterModelPrices() []ModelPrice {
-	// OpenRouter prices are pass-through to underlying providers.
-	// These are typical markups; actual prices vary by model.
+	// OpenRouter routes can select different upstream variants and prices can
+	// change independently. Keep these fallback catalog values explicitly
+	// estimated; exact current spend should come from provider billing metadata.
+	const sourceURL = "https://openrouter.ai/models"
+	estimated := func(model string, input, output, cached, write float64) ModelPrice {
+		return ModelPrice{
+			Provider: "openrouter", Model: model,
+			InputPerM: input, OutputPerM: output, CachedInputPerM: cached, CacheWritePerM: write,
+			Source: "retail_equivalent", SourceURL: sourceURL, Estimated: true,
+		}
+	}
 	return []ModelPrice{
-		{Provider: "openrouter", Model: "anthropic/claude-opus-4-7", InputPerM: 15, OutputPerM: 75, CachedInputPerM: 1.875, CacheWritePerM: 18.75},
-		{Provider: "openrouter", Model: "anthropic/claude-sonnet-4-6", InputPerM: 3, OutputPerM: 15, CachedInputPerM: 0.375, CacheWritePerM: 3.75},
-		{Provider: "openrouter", Model: "openai/gpt-5", InputPerM: 2.5, OutputPerM: 10, CachedInputPerM: 1.25, CacheWritePerM: 2.5},
-		{Provider: "openrouter", Model: "openai/gpt-4o", InputPerM: 2.5, OutputPerM: 10, CachedInputPerM: 1.25, CacheWritePerM: 2.5},
-		{Provider: "openrouter", Model: "openai/gpt-4o-mini", InputPerM: 0.15, OutputPerM: 0.6, CachedInputPerM: 0.075, CacheWritePerM: 0.15},
-		{Provider: "openrouter", Model: "deepseek/deepseek-chat", InputPerM: 0.27, OutputPerM: 1.1, CachedInputPerM: 0.07, CacheWritePerM: 0.27},
-		{Provider: "openrouter", Model: "google/gemini-2.5-pro", InputPerM: 1.25, OutputPerM: 10, CachedInputPerM: 0.3125, CacheWritePerM: 1.25},
-		{Provider: "openrouter", Model: "google/gemini-2.5-flash", InputPerM: 0.15, OutputPerM: 0.6, CachedInputPerM: 0.0375, CacheWritePerM: 0.15},
-		{Provider: "openrouter", Model: "meta-llama/llama-3.3-70b-instruct", InputPerM: 0.1, OutputPerM: 0.1},
+		estimated("anthropic/claude-opus-4-7", 15, 75, 1.875, 18.75),
+		estimated("anthropic/claude-sonnet-4-6", 3, 15, 0.375, 3.75),
+		estimated("openai/gpt-5", 2.5, 10, 1.25, 2.5),
+		estimated("openai/gpt-4o", 2.5, 10, 1.25, 2.5),
+		estimated("openai/gpt-4o-mini", 0.15, 0.6, 0.075, 0.15),
+		estimated("deepseek/deepseek-chat", 0.27, 1.1, 0.07, 0.27),
+		estimated("google/gemini-2.5-pro", 1.25, 10, 0.3125, 1.25),
+		estimated("google/gemini-2.5-flash", 0.15, 0.6, 0.0375, 0.15),
+		estimated("meta-llama/llama-3.3-70b-instruct", 0.1, 0.1, 0, 0),
 	}
 }
 
@@ -332,25 +436,28 @@ func glmModelPrices() []ModelPrice {
 }
 
 func mimoModelPrices() []ModelPrice {
-	// Xiaomi MiMo pricing. Both xiaomi-mimo and xiaomi-tokenplan share models.
-	// Flash pricing from genai-prices; Pro/standard tiers estimated from
-	// comparable Chinese AI provider pricing (DeepSeek, Alibaba, GLM).
+	// MiMo standard/pro/omni values are admitted retail-equivalent estimates,
+	// not authoritative token invoices. Keep that provenance explicit so they
+	// never appear as exact catalog spend.
+	estimated := func(provider, model string, input, output float64) ModelPrice {
+		return ModelPrice{
+			Provider: provider, Model: model, InputPerM: input, OutputPerM: output,
+			Source: "retail_equivalent", Estimated: true,
+		}
+	}
 	var out []ModelPrice
 	for _, provider := range []string{"xiaomi-mimo", "xiaomi-tokenplan"} {
-		out = append(out, []ModelPrice{
-			// Top-tier reasoning model
-			{Provider: provider, Model: "mimo-v2.5-pro", InputPerM: 1.0, OutputPerM: 3.0},
-			// Mid-tier general model
-			{Provider: provider, Model: "mimo-v2.5", InputPerM: 0.2, OutputPerM: 0.6},
-			// Previous-gen pro
-			{Provider: provider, Model: "mimo-v2-pro", InputPerM: 0.5, OutputPerM: 1.5},
-			// Multimodal (omni)
-			{Provider: provider, Model: "mimo-v2-omni", InputPerM: 0.2, OutputPerM: 0.6},
-			// Fast/cheap model (from genai-prices: $0.10/$0.30)
-			{Provider: provider, Model: "mimo-v2-flash", InputPerM: 0.1, OutputPerM: 0.3},
-		}...)
+		out = append(out,
+			estimated(provider, "mimo-v2.5-pro", 1.0, 3.0),
+			estimated(provider, "mimo-v2.5", 0.2, 0.6),
+			estimated(provider, "mimo-v2-pro", 0.5, 1.5),
+			estimated(provider, "mimo-v2-omni", 0.2, 0.6),
+			estimated(provider, "mimo-v2-flash", 0.1, 0.3),
+		)
 	}
-	// mimo-free: free tier, zero cost.
-	out = append(out, ModelPrice{Provider: "mimo-free", Model: "mimo-auto", InputPerM: 0, OutputPerM: 0})
+	// This connector is intentionally a zero-charge tier, not an unknown price.
+	out = append(out, ModelPrice{
+		Provider: "mimo-free", Model: "mimo-auto", Source: "catalog", ExplicitFree: true,
+	})
 	return out
 }

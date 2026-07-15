@@ -63,8 +63,10 @@ func TestCostMicrosAppliesCacheAndReasoningRates(t *testing.T) {
 		ReasoningTokens:  50,
 	}, false)
 
-	if cost != 4_500 {
-		t.Fatalf("CostMicros() = %d, want 4500", cost)
+	// Reasoning tokens are already included in completion tokens, so only the
+	// non-reasoning remainder is charged at the regular output rate.
+	if cost != 4_100 {
+		t.Fatalf("CostMicros() = %d, want 4100", cost)
 	}
 }
 

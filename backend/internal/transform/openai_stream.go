@@ -2,8 +2,9 @@ package transform
 
 import (
 	"bytes"
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
+
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -14,13 +15,13 @@ type oaiStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
 			// ReasoningContent carries thinking/reasoning text from models
 			// that expose it as a structured field (DeepSeek, some MiMo
 			// versions). The JSON field name varies by provider.
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls []oaiStreamToolCall `json:"tool_calls"`
+			ReasoningContent string              `json:"reasoning_content"`
+			ToolCalls        []oaiStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -88,9 +89,12 @@ func (OpenAICodec) ParseStreamLine(line []byte, model string) ([]core.StreamChun
 	}
 
 	if raw.Usage != nil {
-		var cached int
+		var cached, reasoning int
 		if raw.Usage.PromptTokensDetails != nil {
 			cached = raw.Usage.PromptTokensDetails.CachedTokens
+		}
+		if raw.Usage.CompletionTokensDetails != nil {
+			reasoning = raw.Usage.CompletionTokensDetails.ReasoningTokens
 		}
 		chunks = append(chunks, core.StreamChunk{
 			Type: core.ChunkUsage,
@@ -99,6 +103,8 @@ func (OpenAICodec) ParseStreamLine(line []byte, model string) ([]core.StreamChun
 				CompletionTokens: raw.Usage.CompletionTokens,
 				TotalTokens:      raw.Usage.TotalTokens,
 				CachedTokens:     cached,
+				ReasoningTokens:  reasoning,
+				Source:           core.UsageSourceProvider,
 			},
 		})
 	}

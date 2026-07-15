@@ -132,8 +132,15 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	}
 
 	pricing := buildPricing()
-	modelPrices := buildModelPrices()
+	modelPrices := buildModelPrices(ctx, db, log)
 	mtr := meter.New(db.Usage(), pricing, modelPrices)
+	// Reprice deterministic legacy rows before serving analytics. Unknown or
+	// subscription-only models remain visibly unpriced instead of silently free.
+	if updated, backfillErr := mtr.BackfillUnpriced(ctx); backfillErr != nil {
+		log.Warn("usage price backfill failed", "err", backfillErr, "updated", updated)
+	} else if updated > 0 {
+		log.Info("usage price backfill completed", "updated", updated)
+	}
 	mtr.EnableAsync(meter.AsyncConfig{
 		Enabled:              cfg.Meter.Async,
 		BatchSize:            cfg.Meter.BatchSize,
@@ -358,6 +365,18 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		MaxModelsPerProvider: cfg.Health.MaxModelsPerProvider,
 	}, log, db.Accounts(), db.Health(), connRegistry, v)
 
+	reloadPricing := func(reloadCtx context.Context) error {
+		mtr.ReplacePrices(buildPricing(), buildModelPrices(reloadCtx, db, log))
+		updated, reloadErr := mtr.BackfillUnpriced(reloadCtx)
+		if updated > 0 {
+			log.Info("usage pricing reloaded and historical rows backfilled", "updated", updated)
+		}
+		if reloadErr != nil {
+			return fmt.Errorf("reload usage pricing: %w", reloadErr)
+		}
+		return nil
+	}
+
 	gw := gateway.New(gateway.Deps{
 		Config:               cfg,
 		Logger:               log,
@@ -389,6 +408,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		ProxyNotifier:        proxyNotifier,
 		RateLimiter:          limiter,
 		Refresher:            tokenRefresher,
+		ReloadPricing:        reloadPricing,
 		Guardrails:           guardrailEngine,
 		GuardrailRepo:        db.Guardrails(),
 		GuardrailLogs:        db.GuardrailLogs(),
@@ -781,15 +801,40 @@ func (a *App) runCooldownSweeper(ctx context.Context) {
 }
 
 // buildModelPrices builds the per-model pricing table from the connector model prices.
-func buildModelPrices() map[string]meter.Price {
+func buildModelPrices(ctx context.Context, db *store.DB, log *slog.Logger) map[string]meter.Price {
 	out := make(map[string]meter.Price)
 	for _, mp := range connectors.ModelPricingTable() {
+		source := mp.Source
+		if source == "" {
+			source = "catalog"
+		}
+		estimated := mp.Estimated || mp.Provider == "kiro"
 		out[mp.Provider+"/"+mp.Model] = meter.Price{
-			InputPerM:       mp.InputPerM,
-			OutputPerM:      mp.OutputPerM,
-			CachedInputPerM: mp.CachedInputPerM,
-			CacheWritePerM:  mp.CacheWritePerM,
-			ReasoningPerM:   mp.ReasoningPerM,
+			InputPerM: mp.InputPerM, OutputPerM: mp.OutputPerM,
+			CachedInputPerM: mp.CachedInputPerM, CacheWritePerM: mp.CacheWritePerM,
+			ReasoningPerM:        mp.ReasoningPerM,
+			LongContextThreshold: mp.LongContextThreshold,
+			LongInputPerM:        mp.LongInputPerM, LongOutputPerM: mp.LongOutputPerM,
+			LongCachedInputPerM: mp.LongCachedInputPerM, LongCacheWritePerM: mp.LongCacheWritePerM,
+			Source: source, SourceURL: mp.SourceURL, Estimated: estimated, ExplicitFree: mp.ExplicitFree,
+		}
+	}
+	// User-entered custom prices are the highest-priority exact match. Imported
+	// zero values mean "unknown", not free, and intentionally do not override a
+	// canonical vendor catalog match.
+	models, err := db.CustomProviders().ListModels(ctx, store.DefaultTenantID)
+	if err != nil {
+		log.Warn("load custom model prices failed", "err", err)
+		return out
+	}
+	for _, model := range models {
+		if model.InputPerM <= 0 && model.OutputPerM <= 0 {
+			continue
+		}
+		out[model.ProviderID+"/"+model.ModelID] = meter.Price{
+			InputPerM: model.InputPerM, OutputPerM: model.OutputPerM,
+			CachedInputPerM: model.InputPerM, CacheWritePerM: model.InputPerM,
+			ReasoningPerM: model.OutputPerM, Source: "custom", Estimated: false,
 		}
 	}
 	return out

@@ -71,7 +71,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/usage", s.adminUsageSummary)
 	r.Get("/usage/insights", s.adminUsageInsights)
-	r.Get("/usage/models", s.adminModelUsage)
+	r.Get("/usage/models", s.adminModelUsageAccurate)
 	r.Get("/usage/stream", s.adminUsageStream)
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/health/accounts", s.adminListAccountHealth)
@@ -1306,29 +1306,29 @@ type codexCreditInfo struct {
 
 // codexUsageDetails represents Codex usage information including rate limits and reset credits.
 type codexUsageDetails struct {
-	UsageData      *codexUsageData    `json:"usage_data,omitempty"`
-	ResetCredits   *codexResetCreditsData `json:"reset_credits,omitempty"`
-	Error          string                 `json:"error,omitempty"`
+	UsageData    *codexUsageData        `json:"usage_data,omitempty"`
+	ResetCredits *codexResetCreditsData `json:"reset_credits,omitempty"`
+	Error        string                 `json:"error,omitempty"`
 }
 
 type codexUsageData struct {
-	PlanType     string `json:"plan_type"`
-	Allowed      bool   `json:"allowed"`
-	LimitReached bool   `json:"limit_reached"`
-	PrimaryUsedPercent   int   `json:"primary_used_percent"`
-	PrimaryResetAt       int64 `json:"primary_reset_at"`
-	PrimaryWindowSeconds int64 `json:"primary_window_seconds"`
-	SecondaryUsedPercent   int   `json:"secondary_used_percent"`
-	SecondaryResetAt       int64 `json:"secondary_reset_at"`
-	SecondaryWindowSeconds int64 `json:"secondary_window_seconds"`
-	CreditsBalance string `json:"credits_balance"`
-	HasCredits     bool   `json:"has_credits"`
-	Unlimited      bool   `json:"unlimited"`
-	ResetCreditsAvailable int `json:"reset_credits_available"`
+	PlanType               string `json:"plan_type"`
+	Allowed                bool   `json:"allowed"`
+	LimitReached           bool   `json:"limit_reached"`
+	PrimaryUsedPercent     int    `json:"primary_used_percent"`
+	PrimaryResetAt         int64  `json:"primary_reset_at"`
+	PrimaryWindowSeconds   int64  `json:"primary_window_seconds"`
+	SecondaryUsedPercent   int    `json:"secondary_used_percent"`
+	SecondaryResetAt       int64  `json:"secondary_reset_at"`
+	SecondaryWindowSeconds int64  `json:"secondary_window_seconds"`
+	CreditsBalance         string `json:"credits_balance"`
+	HasCredits             bool   `json:"has_credits"`
+	Unlimited              bool   `json:"unlimited"`
+	ResetCreditsAvailable  int    `json:"reset_credits_available"`
 }
 
 type codexResetCreditsData struct {
-	AvailableCount int                `json:"available_count"`
+	AvailableCount int               `json:"available_count"`
 	Credits        []codexCreditInfo `json:"credits"`
 }
 
@@ -1363,12 +1363,12 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 
 	// Fetch usage data
 	usageData, usageErr := fetchCodexUsage(ctx, creds.AccessToken, creds.Extra)
-	
+
 	// Fetch reset credits
 	resetCredits, resetErr := fetchCodexResetCredits(ctx, creds.AccessToken, creds.Extra)
 
 	result := codexUsageDetails{}
-	
+
 	if usageErr == nil && usageData != nil {
 		result.UsageData = usageData
 	} else {
@@ -1447,10 +1447,10 @@ func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]s
 	}
 
 	var raw struct {
-		PlanType string `json:"plan_type"`
+		PlanType  string `json:"plan_type"`
 		RateLimit struct {
-			Allowed      bool `json:"allowed"`
-			LimitReached bool `json:"limit_reached"`
+			Allowed       bool `json:"allowed"`
+			LimitReached  bool `json:"limit_reached"`
 			PrimaryWindow struct {
 				UsedPercent        int   `json:"used_percent"`
 				LimitWindowSeconds int64 `json:"limit_window_seconds"`
@@ -1516,9 +1516,9 @@ func fetchCodexResetCredits(ctx context.Context, accessToken string, extra map[s
 	defer resp.Body.Close()
 
 	var data struct {
-		AvailableCount *int `json:"available_count"`
+		AvailableCount  *int `json:"available_count"`
 		AvailableCount2 *int `json:"availableCount"`
-		Credits []struct {
+		Credits         []struct {
 			RedeemRequestID  string `json:"redeem_request_id"`
 			RedeemRequestID2 string `json:"redeemRequestId"`
 			Status           string `json:"status"`
@@ -1631,12 +1631,12 @@ func consumeCodexResetCredit(ctx context.Context, accessToken, redeemRequestID s
 	noCredit := resp.StatusCode < 400 && data.Code == "no_credit"
 
 	return map[string]any{
-		"ok":             ok,
-		"no_credit":      noCredit,
-		"status":         resp.StatusCode,
-		"code":           data.Code,
-		"windows_reset":  data.WindowsReset,
-		"message":        data.Message,
+		"ok":            ok,
+		"no_credit":     noCredit,
+		"status":        resp.StatusCode,
+		"code":          data.Code,
+		"windows_reset": data.WindowsReset,
+		"message":       data.Message,
 	}, nil
 }
 

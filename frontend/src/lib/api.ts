@@ -340,33 +340,94 @@ export interface UsageSummary {
   since: string;
 }
 
+export type UsageTerminalStatus = "success" | "cache_hit" | "blocked" | "failed" | "cancelled";
+export type UsageSource = "provider" | "estimated" | "cache" | "legacy" | "none";
+export type PricingStatus = "priced" | "estimated" | "free" | "missing" | "partial" | "legacy" | "none" | "mixed";
+
 export interface ProviderUsage {
   provider: string;
   display_name: string;
   color: string;
   icon: string;
   total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  success_rate: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
   cost_usd: number;
+  saved_cost_usd: number;
+  avoided_cost_usd: number;
+  avg_latency_ms: number;
+  avg_ttft_ms: number;
+  pricing_eligible_requests: number;
+  unpriced_requests: number;
+  estimated_requests: number;
+  estimated_usage_requests: number;
+  legacy_usage_requests: number;
+  backfilled_requests: number;
+	pricing_request_coverage: number | null;
   share_pct: number;
+  token_share_pct: number;
 }
 
 export interface RecentActivity {
   id: string;
+  request_id: string;
   provider: string;
+  provider_name: string;
+  provider_color: string;
+  provider_icon: string;
   model: string;
+  status: UsageTerminalStatus;
+  error_kind: string;
+  usage_source: UsageSource;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
   tokens: number;
   cost_usd: number;
+  input_cost_usd: number;
+  cached_cost_usd: number;
+  cache_write_cost_usd: number;
+  output_cost_usd: number;
+  reasoning_cost_usd: number;
+  saved_cost_usd: number;
+  avoided_cost_usd: number;
+  pricing_status: PricingStatus;
+  pricing_source: string;
+  pricing_key: string;
+  pricing_match_kind: string;
+  pricing_source_url: string;
+  pricing_as_of: string | null;
+  pricing_backfilled: boolean;
+  input_rate_per_m: number;
+  cached_rate_per_m: number;
+  cache_write_rate_per_m: number;
+  output_rate_per_m: number;
+  reasoning_rate_per_m: number;
   cache_hit: boolean;
   latency_ms: number;
+  upstream_latency_ms: number;
+  end_to_end_latency_ms: number;
+  ttft_ms: number;
+  slim_bytes_saved: number;
+  slim_tokens_saved: number;
+  slim_rules: string;
+  slim_active: boolean;
+  caveman_active: boolean;
+  terse_active: boolean;
+  headroom_tokens_saved: number;
+  headroom_bytes_saved: number;
+  headroom_active: boolean;
+  ponytail_active: boolean;
   created_at: string;
-  ttft_ms?: number;
-  slim_bytes_saved?: number;
-  slim_tokens_saved?: number;
-  slim_rules?: string;
-  caveman_active?: boolean;
-  terse_active?: boolean;
 }
 
 export interface RuleSaving {
@@ -379,69 +440,140 @@ export interface RuleSaving {
 export interface ClientSaving {
   client: string;
   requests: number;
+  optimized_requests: number;
   bytes_saved: number;
   tokens_saved: number;
-  usd_saved: number;
+  slim_tokens_saved: number;
   caveman_requests: number;
   terse_requests: number;
-  // Headroom/Ponytail per-client savings. Optional for backward-compat with
-  // payloads recorded before these savers existed; treat missing as 0.
-  headroom_tokens_saved?: number;
-  ponytail_requests?: number;
+  headroom_tokens_saved: number;
+  ponytail_requests: number;
+  saved_cost_usd: number;
+  avoided_cost_usd: number;
+  usd_saved: number;
 }
 
 export interface TokenSavings {
   slim_bytes_saved: number;
   slim_tokens_saved: number;
+  headroom_tokens_saved: number;
+  total_tokens_saved: number;
+  saved_tokens_per_request: number;
+  saved_tokens_per_optimized_request: number;
+  optimized_requests: number;
   caveman_requests: number;
   terse_requests: number;
-  usd_saved?: number;
-  usd_saved_estimate?: boolean;
-  // Headroom/Ponytail summary savings. Optional for backward-compat with
-  // payloads recorded before these savers existed; treat missing as 0.
-  headroom_tokens_saved?: number;
-  ponytail_requests?: number;
-  headroom_requests?: number;
+  headroom_requests: number;
+  ponytail_requests: number;
+  saved_cost_usd: number;
+  avoided_cost_usd: number;
+  usd_saved: number;
+  usd_saved_estimate: boolean;
   rules: RuleSaving[];
-  by_client?: ClientSaving[];
+  by_client: ClientSaving[];
 }
 
 export interface ModelUsage {
   provider: string;
   provider_name: string;
+  provider_color: string;
+  provider_icon: string;
   model: string;
   total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  success_rate: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
   cost_usd: number;
-  input_per_m?: number;
-  output_per_m?: number;
-  cached_input_per_m?: number;
+  saved_cost_usd: number;
+  avoided_cost_usd: number;
+  avg_latency_ms: number;
+  avg_ttft_ms: number;
+  pricing_eligible_requests: number;
+	unpriced_requests: number;
+	missing_pricing_requests: number;
+	legacy_pricing_requests: number;
+  estimated_requests: number;
+  estimated_usage_requests: number;
+  legacy_usage_requests: number;
+  backfilled_requests: number;
+	pricing_request_coverage: number | null;
+  pricing_status: PricingStatus;
+  pricing_mixed: boolean;
+  pricing_source: string;
+  pricing_key: string;
+  input_per_m: number;
+  cached_input_per_m: number;
+  cache_write_per_m: number;
+  output_per_m: number;
+  reasoning_per_m: number;
 }
 
 export interface SeriesPoint {
   label: string;
+  start: string;
   count: number;
+  requests: number;
+  failures: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+}
+
+export interface UsageInsightsSummary {
+  total_requests: number;
+  successful_requests: number;
+  failed_requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  cache_write_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  cost_per_request_usd: number;
+  tokens_per_request: number;
+  cache_hits: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  avg_ttft_ms: number;
+  pricing_eligible_requests: number;
+  priced_requests: number;
+  unpriced_requests: number;
+  unpriced_tokens: number;
+  estimated_requests: number;
+  estimated_usage_requests: number;
+  estimated_usage_tokens: number;
+  legacy_usage_requests: number;
+  legacy_usage_tokens: number;
+  backfilled_requests: number;
+	pricing_request_coverage: number | null;
+	pricing_token_coverage: number | null;
+  since: string;
 }
 
 export interface UsageInsights {
-  summary: {
-    total_requests: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    cached_tokens: number;
-    cost_usd: number;
-    cache_hits: number;
-    success_rate: number;
-    avg_latency_ms: number;
-    avg_ttft_ms: number;
-    since: string;
-  };
+  period: string;
+  since: string;
+  generated_at: string;
+  summary: UsageInsightsSummary;
   savings: TokenSavings;
   providers: ProviderUsage[];
   recent: RecentActivity[];
   series: SeriesPoint[];
   busiest: string;
+}
+
+export interface ModelUsageResponse {
+  period: string;
+  since: string;
+  generated_at: string;
+  models: ModelUsage[];
 }
 
 export interface UpstreamQuota {
@@ -503,7 +635,9 @@ export interface QuotaAccount {
   auth_kind: string;
   priority: number;
   status: string; // active | paused | needs_attention
-  usage_type: string; // token | credit
+  usage_type: string; // compatibility field; not a paid/free classification
+  quota_supported?: boolean;
+  quota_state?: "reported" | "pending" | "paused" | "unavailable" | "error" | "usage_only";
   total_requests: number;
   prompt_tokens: number;
   completion_tokens: number;
@@ -1179,7 +1313,7 @@ export const api = {
   usageInsights: (period: string) =>
     request<UsageInsights>("GET", `/usage/insights?period=${period}&tz=${browserTZ()}`),
   modelUsage: (period: string) =>
-    request<{ models: ModelUsage[] }>("GET", `/usage/models?period=${period}&tz=${browserTZ()}`),
+    request<ModelUsageResponse>("GET", `/usage/models?period=${period}&tz=${browserTZ()}`),
 
   quota: (period: string) =>
     request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}&tz=${browserTZ()}`),
@@ -1509,6 +1643,8 @@ export interface HealthSummary {
   disabled: number;
   fallbacks: number;
   avg_p95_latency_ms: number;
+  telemetry_dropped: number;
+  telemetry_dropped_scope: "process_lifetime";
 }
 
 export interface HealthProviderRow {
@@ -1527,7 +1663,16 @@ export interface HealthProviderRow {
   recommendation?: string;
 }
 
+export interface HealthOverviewWindow {
+  kind: "rolling_current";
+  duration_seconds: number;
+  requested_range: string;
+  generated_at: string;
+  since?: string;
+}
+
 export interface HealthOverview {
+  window: HealthOverviewWindow;
   summary: HealthSummary;
   providers: HealthProviderRow[];
 }

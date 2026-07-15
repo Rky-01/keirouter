@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Scissors, Coins, FileText, Gauge, Sparkles, Layers } from "lucide-react";
+import { ChevronDown, FileText, Scissors } from "lucide-react";
 import type { ClientSaving, TokenSavings, UsageInsights } from "../lib/api";
 import { SavingsCardShareButton } from "./SavingsCard";
 
@@ -85,39 +85,21 @@ function ClientAvatar({ id, className = "h-6 w-6" }: { id: string; className?: s
   );
 }
 
-// StatTile renders a hero metric with a soft colored accent.
-function StatTile({ label, value, unit, icon: Icon, tint }: {
-  label: string; value: string; unit?: string; icon: any; tint: string;
-}) {
-  return (
-    <div className="relative flex flex-col gap-2 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5">
-      <div className="absolute inset-0 opacity-[0.07]" style={{ background: `radial-gradient(120% 120% at 100% 0%, ${tint} 0%, transparent 60%)` }} />
-      <div className="relative flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5" style={{ color: tint }} />
-        <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">{label}</span>
-      </div>
-      <div className="relative flex items-baseline gap-1">
-        <span className="text-xl font-light tabular-nums leading-none text-[var(--text)]">{value}</span>
-        {unit && <span className="text-[11px] font-medium text-[var(--text-muted)]">{unit}</span>}
-      </div>
-    </div>
-  );
-}
-
 export function TokenSavingsBreakdown({ savings, totalRequests, insights, period }: { savings: TokenSavings; totalRequests: number; insights: UsageInsights; period: string }) {
+  const [expanded, setExpanded] = useState(false);
   const rules = (savings.rules || []).slice().sort((a, b) => b.bytes_saved - a.bytes_saved);
   const maxBytes = Math.max(...rules.map((r) => r.bytes_saved), 1);
   const totalCavemanPct = totalRequests > 0 ? ((savings.caveman_requests / totalRequests) * 100).toFixed(1) : "0";
   const totalTersePct = totalRequests > 0 ? ((savings.terse_requests / totalRequests) * 100).toFixed(0) : "0";
-  // New savers. Old payloads predate these fields, so coalesce missing to 0.
-  const headroomTokensSaved = savings.headroom_tokens_saved ?? 0;
-  const ponytailRequests = savings.ponytail_requests ?? 0;
+  const headroomTokensSaved = savings.headroom_tokens_saved;
+  const ponytailRequests = savings.ponytail_requests;
   const totalPonytailPct = totalRequests > 0 ? ((ponytailRequests / totalRequests) * 100).toFixed(0) : "0";
-  const hasSavings = savings.slim_bytes_saved > 0 || savings.caveman_requests > 0 || savings.terse_requests > 0 || headroomTokensSaved > 0 || ponytailRequests > 0 || rules.length > 0;
-  // Prefer the backend's blended USD estimate; fall back to a rough $3/M rate
-  // for older payloads that predate the usd_saved field.
-  const usdSaved = savings.usd_saved ?? (savings.slim_tokens_saved / 1_000_000) * 3;
-  const optimizedRequests = savings.caveman_requests + savings.terse_requests;
+  const hasSavings = savings.total_tokens_saved > 0 || savings.optimized_requests > 0 || savings.usd_saved > 0 || rules.length > 0;
+  // USD savings and optimized request count are authoritative backend values.
+  // They must not be reconstructed from overlapping optimizer activations or a
+  // hard-coded blended token rate.
+  const usdSaved = savings.usd_saved;
+  const optimizedRequests = savings.optimized_requests;
 
   const badges: { label: string; pct: string; color: string }[] = [];
   if (savings.caveman_requests > 0) badges.push({ label: "CVMN", pct: totalCavemanPct, color: "#a855f7" });
@@ -126,35 +108,45 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-3 bg-[var(--bg-subtle)]">
-        <div className="flex items-center gap-2">
-          <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-            <Scissors className="h-3.5 w-3.5" />
+      <div className="flex items-stretch bg-[var(--bg-subtle)]">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-2 px-5 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60"
+        >
+          <span className="flex min-w-[180px] items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+              <Scissors className="h-3.5 w-3.5" />
+            </span>
+            <span>
+              <span className="block text-sm font-semibold tracking-tight">Optimization</span>
+              <span className="block text-[10px] text-[var(--text-muted)]">Open rules and client attribution</span>
+            </span>
           </span>
-          <h3 className="text-sm font-semibold tracking-tight">Optimization Engine</h3>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2.5 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
-            {badges.map((b) => (
-              <span key={b.label} className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: b.color }} />
-                {b.label} {b.pct}%
-              </span>
-            ))}
-          </div>
+          <span className="flex flex-1 flex-wrap items-center gap-x-5 gap-y-1 text-xs tabular-nums">
+            <span><strong className="text-[var(--text)]">{fmtUSD(usdSaved)}</strong> <span className="text-[var(--text-muted)]">saved</span></span>
+            <span><strong className="text-[var(--text)]">{fmtNum(savings.total_tokens_saved)}</strong> <span className="text-[var(--text-muted)]">tokens</span></span>
+            <span><strong className="text-[var(--text)]">{fmtNum(optimizedRequests)}</strong> <span className="text-[var(--text-muted)]">optimized</span></span>
+            <span className="hidden xl:inline"><strong className="text-[var(--text)]">{fmtBytes(savings.slim_bytes_saved)}</strong> <span className="text-[var(--text-muted)]">prompt reduced</span></span>
+          </span>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-[var(--text-muted)] transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </button>
+        <div className="flex shrink-0 items-center border-l border-[var(--border)] px-3">
           <SavingsCardShareButton insights={insights} period={period} />
         </div>
       </div>
 
-      <div className="p-5">
-        {/* Hero stat tiles */}
-        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatTile label="Total Saved" value={fmtBytes(savings.slim_bytes_saved)} icon={Sparkles} tint="#10b981" />
-          <StatTile label="Tokens Saved" value={fmtNum(savings.slim_tokens_saved)} unit="tok" icon={Coins} tint="#f59e0b" />
-          <StatTile label="Est. Value" value={fmtUSD(usdSaved)} unit="est" icon={Gauge} tint="#0ea5e9" />
-          <StatTile label="Optimized" value={fmtNum(optimizedRequests)} unit="req" icon={Layers} tint="#a855f7" />
+      {expanded && <div className="border-t border-[var(--border)] p-5">
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+          {badges.map((badge) => (
+            <span key={badge.label} className="flex items-center gap-1.5 rounded-full border border-[var(--border)] px-2 py-1">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: badge.color }} />
+              {badge.label} {badge.pct}%
+            </span>
+          ))}
+          {savings.usd_saved_estimate && <span className="rounded-full border border-amber-300/60 px-2 py-1 text-amber-700 dark:text-amber-300">Estimated value</span>}
         </div>
-
         {/* Rules */}
         <div>
           <div className="mb-3 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
@@ -180,7 +172,7 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
                         className="h-full rounded-full transition-all"
                         style={{
                           width: `${Math.max(3, (r.bytes_saved / maxBytes) * 100)}%`,
-                          background: "linear-gradient(90deg, var(--color-accent-500), #10b981)",
+                          background: "var(--color-accent-500)",
                         }}
                       />
                     </div>
@@ -215,7 +207,7 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
         )}
 
         <ClientBreakdown clients={savings.by_client || []} />
-      </div>
+      </div>}
     </div>
   );
 }
@@ -244,12 +236,12 @@ function ClientBreakdown({ clients }: { clients: ClientSaving[] }) {
               <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
                 <div
                   className="h-full rounded-full"
-                  style={{ width: `${Math.max(3, (c.tokens_saved / maxTokens) * 100)}%`, background: "linear-gradient(90deg, var(--color-accent-500), #10b981)" }}
+                  style={{ width: `${Math.max(3, (c.tokens_saved / maxTokens) * 100)}%`, background: "var(--color-accent-500)" }}
                 />
               </div>
               <div className="mt-1 flex items-center justify-between text-[10px] font-medium tabular-nums text-[var(--text-muted)]">
                 <span>{fmtNum(c.tokens_saved)} tok saved</span>
-                <span>{c.requests}× requests</span>
+                <span>{fmtNum(c.optimized_requests)} optimized / {fmtNum(c.requests)} total</span>
               </div>
             </div>
           </div>

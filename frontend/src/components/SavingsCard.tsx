@@ -42,6 +42,7 @@ const cardAccents = ["#059669", "#C45F3A", "#2563eb", "#9a978c"];
 
 interface SavingsCardData {
   costSaved: number;
+  costSavedEstimated: boolean;
   tokensSaved: number;
   savingsPct: number;
   totalRequests: number;
@@ -61,6 +62,7 @@ function formatCost(cost: number): string {
 function SavingsCardContent({ data }: { data: SavingsCardData }) {
   const {
     costSaved,
+    costSavedEstimated,
     tokensSaved,
     savingsPct,
     totalRequests,
@@ -78,8 +80,9 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
   ].filter(Boolean) as { name: string; desc: string }[];
 
   return (
-    <div
-      style={{
+		<div
+			aria-hidden="true"
+			style={{
         width: 1200,
         height: 630,
         position: "relative",
@@ -236,7 +239,7 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
                 letterSpacing: "0.08em",
               }}
             >
-              Total Cost Saved
+              {costSavedEstimated ? "Estimated Cost Saved" : "Total Cost Saved"}
             </span>
             <span
               style={{
@@ -270,7 +273,7 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
                     <line x1="12" y1="5" x2="12" y2="19"></line>
                     <polyline points="19 12 12 19 5 12"></polyline>
                   </svg>
-                  {savingsPct.toFixed(1)}% Reduction
+                  {savingsPct.toFixed(1)}% {costSavedEstimated ? "Estimated Reduction" : "Reduction"}
                 </div>
               </div>
             )}
@@ -424,15 +427,15 @@ export function SavingsCardShareButton({
 
   const { summary, savings } = insights;
 
-  const avgRate = 3;
-  const tokensSaved = savings?.slim_tokens_saved ?? 0;
-  const costSaved = (tokensSaved / 1_000_000) * avgRate;
+  const tokensSaved = savings.total_tokens_saved;
+  const costSaved = savings.usd_saved;
   const actualCost = summary.cost_usd;
   const originalCost = actualCost + costSaved;
   const savingsPct = originalCost > 0 ? (costSaved / originalCost) * 100 : 0;
 
   const cardData: SavingsCardData = {
     costSaved,
+    costSavedEstimated: savings.usd_saved_estimate,
     tokensSaved,
     savingsPct,
     totalRequests: summary.total_requests,
@@ -487,8 +490,11 @@ export function SavingsCardShareButton({
       </div>
 
       {/* Download button */}
-      <button
-        onClick={handleShare}
+		<button
+			type="button"
+			aria-label={done ? "Savings card downloaded" : generating ? "Generating savings card" : "Download savings card"}
+			title="Download savings card"
+			onClick={handleShare}
         disabled={generating || summary.total_requests === 0}
         className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg bg-accent-600 px-3 text-xs font-medium text-white shadow-sm transition-all hover:bg-accent-700 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-accent-500 dark:hover:bg-accent-400"
       >

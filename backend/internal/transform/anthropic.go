@@ -439,11 +439,13 @@ func (AnthropicCodec) ParseResponse(body []byte, model string) (*core.ChatRespon
 		Message:      msg,
 		FinishReason: mapAntStop(raw.StopReason),
 		Usage: core.Usage{
-			PromptTokens:     raw.Usage.InputTokens,
+			PromptTokens:     raw.Usage.InputTokens + raw.Usage.CacheReadInputTokens + raw.Usage.CacheCreationInputTokens,
 			CompletionTokens: raw.Usage.OutputTokens,
-			TotalTokens:      raw.Usage.InputTokens + raw.Usage.OutputTokens,
+			TotalTokens: raw.Usage.InputTokens + raw.Usage.CacheReadInputTokens +
+				raw.Usage.CacheCreationInputTokens + raw.Usage.OutputTokens,
 			CachedTokens:     raw.Usage.CacheReadInputTokens,
 			CacheWriteTokens: raw.Usage.CacheCreationInputTokens,
+			Source:           core.UsageSourceProvider,
 		},
 	}, nil
 }

@@ -52,6 +52,29 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestExtractUsageFromStream_AnthropicIncludesCachedInput(t *testing.T) {
+	raw := []byte(`event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":25,"cache_read_input_tokens":900}}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"output_tokens":15}}
+`)
+
+	usage := extractUsageFromStream(raw)
+	if usage.PromptTokens != 1025 {
+		t.Errorf("PromptTokens = %d, want 1025", usage.PromptTokens)
+	}
+	if usage.CachedTokens != 900 {
+		t.Errorf("CachedTokens = %d, want 900", usage.CachedTokens)
+	}
+	if usage.CacheWriteTokens != 25 {
+		t.Errorf("CacheWriteTokens = %d, want 25", usage.CacheWriteTokens)
+	}
+	if usage.TotalTokens != 1040 {
+		t.Errorf("TotalTokens = %d, want 1040", usage.TotalTokens)
+	}
+}
+
 func TestExtractUsageFromStream_Empty(t *testing.T) {
 	raw := []byte(`data: {"choices":[{"delta":{"content":"no usage here"}}]}
 

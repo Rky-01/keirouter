@@ -281,6 +281,7 @@ type gemResponse struct {
 	UsageMetadata struct {
 		PromptTokenCount        int `json:"promptTokenCount"`
 		CandidatesTokenCount    int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
 		TotalTokenCount         int `json:"totalTokenCount"`
 		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
@@ -298,15 +299,21 @@ func (GeminiCodec) ParseResponse(body []byte, model string) (*core.ChatResponse,
 	msg := parseGemContent(cand.Content)
 	msg.Role = core.RoleAssistant
 
+	completionTokens := raw.UsageMetadata.CandidatesTokenCount + raw.UsageMetadata.ThoughtsTokenCount
+	if completionTokens == 0 && raw.UsageMetadata.TotalTokenCount > raw.UsageMetadata.PromptTokenCount {
+		completionTokens = raw.UsageMetadata.TotalTokenCount - raw.UsageMetadata.PromptTokenCount
+	}
 	return &core.ChatResponse{
 		Model:        model,
 		Message:      msg,
 		FinishReason: mapGemFinish(cand.FinishReason),
 		Usage: core.Usage{
 			PromptTokens:     raw.UsageMetadata.PromptTokenCount,
-			CompletionTokens: raw.UsageMetadata.CandidatesTokenCount,
+			CompletionTokens: completionTokens,
 			TotalTokens:      raw.UsageMetadata.TotalTokenCount,
 			CachedTokens:     raw.UsageMetadata.CachedContentTokenCount,
+			ReasoningTokens:  raw.UsageMetadata.ThoughtsTokenCount,
+			Source:           core.UsageSourceProvider,
 		},
 	}, nil
 }

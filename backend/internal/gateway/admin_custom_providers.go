@@ -300,6 +300,7 @@ func (s *Server) adminDeleteCustomProvider(w http.ResponseWriter, r *http.Reques
 	// Drop the in-memory dynamic provider + its models so routing/discovery
 	// stop exposing it immediately.
 	connectors.UnregisterDynamicProvider(id)
+	s.reloadUsagePricing(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                id,
 		"deleted":           true,
@@ -453,6 +454,16 @@ func (s *Server) reloadCustomModels(ctx context.Context, providerID string) {
 		return
 	}
 	connectors.SetDynamicModels(providerID, customModelsToSpecs(models))
+	s.reloadUsagePricing(ctx)
+}
+
+func (s *Server) reloadUsagePricing(ctx context.Context) {
+	if s.reloadPricing == nil {
+		return
+	}
+	if err := s.reloadPricing(ctx); err != nil {
+		s.log.Warn("reload usage pricing failed", "err", err)
+	}
 }
 
 func customModelsToSpecs(models []store.CustomModel) []connectors.ModelSpec {

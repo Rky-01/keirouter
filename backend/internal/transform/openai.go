@@ -835,6 +835,9 @@ type oaiUsage struct {
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details,omitempty"`
 }
 
 func (c OpenAICodec) ParseResponse(body []byte, model string) (*core.ChatResponse, error) {
@@ -902,15 +905,20 @@ func (OpenAICodec) buildResponse(raw oaiResponse, model string) (*core.ChatRespo
 		FinishReason: mapOAIFinish(choice.FinishReason),
 	}
 	if raw.Usage != nil {
-		var cached int
+		var cached, reasoning int
 		if raw.Usage.PromptTokensDetails != nil {
 			cached = raw.Usage.PromptTokensDetails.CachedTokens
+		}
+		if raw.Usage.CompletionTokensDetails != nil {
+			reasoning = raw.Usage.CompletionTokensDetails.ReasoningTokens
 		}
 		resp.Usage = core.Usage{
 			PromptTokens:     raw.Usage.PromptTokens,
 			CompletionTokens: raw.Usage.CompletionTokens,
 			TotalTokens:      raw.Usage.TotalTokens,
 			CachedTokens:     cached,
+			ReasoningTokens:  reasoning,
+			Source:           core.UsageSourceProvider,
 		}
 	}
 	return resp, nil

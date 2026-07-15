@@ -21,7 +21,7 @@ const providerHealthCurrentColumns = `id, provider, provider_account_id, model, 
 	last_probe_at, last_updated_at`
 
 // HealthKey builds the deterministic unique key for a health dimension tuple.
-// Empty dimensions collapse to '' so SQLite and PostgreSQL treat NULLs
+// Empty dimensions collapse to ” so SQLite and PostgreSQL treat NULLs
 // identically under the UNIQUE constraint.
 func HealthKey(provider, account, model, capability string) string {
 	return provider + ":" + account + ":" + model + ":" + capability
@@ -130,6 +130,30 @@ func (r *ProviderHealthRepo) ListCurrentByProvider(ctx context.Context, provider
 	return out, rows.Err()
 }
 
+// DeleteTrafficCurrent removes a traffic-derived current row only when it has
+// not been refreshed after the supplied cutoff. Probe-only rows have zero
+// requests and are intentionally preserved.
+func (r *ProviderHealthRepo) DeleteTrafficCurrent(ctx context.Context, provider, account, model, capability string, updatedBefore time.Time) error {
+	q := r.db.rebind(`DELETE FROM provider_health_current
+		WHERE health_key = ? AND request_count > 0 AND last_updated_at <= ?`)
+	if _, err := r.db.sql.ExecContext(ctx, q,
+		HealthKey(provider, account, model, capability), formatTime(updatedBefore)); err != nil {
+		return fmt.Errorf("store: delete provider health current: %w", err)
+	}
+	return nil
+}
+
+// DeleteStaleTrafficCurrent removes persisted traffic windows left behind by a
+// previous process once their collector window has elapsed.
+func (r *ProviderHealthRepo) DeleteStaleTrafficCurrent(ctx context.Context, updatedBefore time.Time) error {
+	q := r.db.rebind(`DELETE FROM provider_health_current
+		WHERE request_count > 0 AND last_updated_at < ?`)
+	if _, err := r.db.sql.ExecContext(ctx, q, formatTime(updatedBefore)); err != nil {
+		return fmt.Errorf("store: delete stale provider health current: %w", err)
+	}
+	return nil
+}
+
 // UpdateProbeTimestamp marks the last probe time for a health key without
 // clobbering traffic-derived fields. Used when real traffic already populates
 // the row and a probe merely refreshes last_probe_at.
@@ -143,12 +167,38 @@ func (r *ProviderHealthRepo) UpdateProbeTimestamp(ctx context.Context, provider,
 	return nil
 }
 
-// InsertSnapshot writes one aggregated historical bucket.
+// InsertSnapshot writes one aggregated historical bucket. The bucket identity
+// is its start time and provider dimensions; replacing that identity lets late
+// telemetry correct a completed minute without creating duplicate snapshots.
 func (r *ProviderHealthRepo) InsertSnapshot(ctx context.Context, s ProviderHealthSnapshot) error {
 	if s.ID == "" {
 		return fmt.Errorf("store: provider health snapshot: missing id")
 	}
-	q := r.db.rebind(`INSERT INTO provider_health_snapshots (id, bucket_start, bucket_size_seconds,
+	tx, err := r.db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin provider health snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	deleteQuery := r.db.rebind(`DELETE FROM provider_health_snapshots
+		WHERE bucket_start = ? AND provider = ? AND provider_account_id = ? AND model = ? AND capability = ?`)
+	if _, err := tx.ExecContext(ctx, deleteQuery, formatTime(s.BucketStart), s.Provider,
+		s.ProviderAccountID, s.Model, s.Capability); err != nil {
+		return fmt.Errorf("store: replace provider health snapshot: %w", err)
+	}
+	if err := insertProviderHealthSnapshot(ctx, tx, r.db.rebind, s); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit provider health snapshot: %w", err)
+	}
+	return nil
+}
+
+func insertProviderHealthSnapshot(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, rebind func(string) string, s ProviderHealthSnapshot) error {
+	q := rebind(`INSERT INTO provider_health_snapshots (id, bucket_start, bucket_size_seconds,
 		provider, provider_account_id, model, capability,
 		request_count, success_count, failure_count, fallback_count, final_failure_count,
 		input_tokens, output_tokens, estimated_cost_microusd,
@@ -158,7 +208,7 @@ func (r *ProviderHealthRepo) InsertSnapshot(ctx context.Context, s ProviderHealt
 		provider_5xx_count, bad_request_count, network_error_count, unsupported_count, unknown_error_count,
 		health_score, health_status, main_issue, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	_, err := r.db.sql.ExecContext(ctx, q,
+	_, err := exec.ExecContext(ctx, q,
 		s.ID, formatTime(s.BucketStart), s.BucketSizeSeconds,
 		s.Provider, s.ProviderAccountID, s.Model, s.Capability,
 		s.RequestCount, s.SuccessCount, s.FailureCount, s.FallbackCount, s.FinalFailureCount,
@@ -300,7 +350,7 @@ func scanProviderHealthCurrent(scan func(dest ...any) error) (ProviderHealthCurr
 		latencyP95, ttftP95                 sql.NullInt64
 		mainIssue, recommendation           sql.NullString
 		lastSuccess, lastFailure, lastProbe sql.NullString
-		lastUpdated                          string
+		lastUpdated                         string
 	)
 	if err := scan(
 		&c.ID, &c.Provider, &c.ProviderAccountID, &c.Model, &c.Capability,
@@ -344,9 +394,9 @@ func scanProviderHealthCurrent(scan func(dest ...any) error) (ProviderHealthCurr
 
 func scanProviderHealthSnapshot(scan func(dest ...any) error) (ProviderHealthSnapshot, error) {
 	var (
-		s                            ProviderHealthSnapshot
-		bucketStart, createdAt       string
-		mainIssue                    sql.NullString
+		s                                  ProviderHealthSnapshot
+		bucketStart, createdAt             string
+		mainIssue                          sql.NullString
 		lp50, lp95, lp99, tp50, tp95, tp99 sql.NullInt64
 	)
 	if err := scan(
@@ -378,11 +428,11 @@ func scanProviderHealthSnapshot(scan func(dest ...any) error) (ProviderHealthSna
 
 func scanProviderProbeResult(scan func(dest ...any) error) (ProviderProbeResult, error) {
 	var (
-		p                                                  ProviderProbeResult
-		httpStatus, latencyMs, ttftMs, promptTok, compTok  sql.NullInt64
-		costMicros                                         sql.NullInt64
-		errType, errMsg                                    sql.NullString
-		createdAt                                          string
+		p                                                 ProviderProbeResult
+		httpStatus, latencyMs, ttftMs, promptTok, compTok sql.NullInt64
+		costMicros                                        sql.NullInt64
+		errType, errMsg                                   sql.NullString
+		createdAt                                         string
 	)
 	if err := scan(
 		&p.ID, &p.Provider, &p.ProviderAccountID, &p.Model, &p.Capability,

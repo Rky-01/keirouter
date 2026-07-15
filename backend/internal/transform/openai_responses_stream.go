@@ -36,6 +36,9 @@ type respStreamEvent struct {
 			InputTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"input_tokens_details"`
+			OutputTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
 		} `json:"usage"`
 		Error *struct {
 			Message string `json:"message"`
@@ -112,6 +115,8 @@ func (OpenAIResponsesCodec) ParseStreamLine(line []byte, _ string) ([]core.Strea
 					CompletionTokens: u.OutputTokens,
 					TotalTokens:      u.InputTokens + u.OutputTokens,
 					CachedTokens:     u.InputTokensDetails.CachedTokens,
+					ReasoningTokens:  u.OutputTokensDetails.ReasoningTokens,
+					Source:           core.UsageSourceProvider,
 				},
 			})
 		}

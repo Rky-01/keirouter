@@ -1,9 +1,8 @@
 // Package meter records per-request usage and computes cost.
 //
-// Cost is stored in micros (millionths of a USD) as an integer to avoid
-// floating-point drift in budget accounting. The pricing table maps
-// provider/model to its per-million-token rates; unknown models fall back to
-// provider-level rates, then to zero (treated as free for display purposes).
+// Cost is stored canonically in nanodollars with a micro-USD compatibility
+// value for budgets. Pricing resolution distinguishes explicit free models from
+// missing prices so unknown usage is never silently reported as free.
 package meter
 
 import (
@@ -20,13 +19,24 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/usagehub"
 )
 
-// Price holds per-million-token rates in USD.
+// Price holds per-million-token rates in USD plus immutable provenance.
 type Price struct {
-	InputPerM       float64 // standard input tokens
-	OutputPerM      float64 // standard output tokens
-	CachedInputPerM float64 // cache-read input tokens (often 50-90% off standard)
-	CacheWritePerM  float64 // cache-write input tokens (often 25% above standard)
-	ReasoningPerM   float64 // reasoning/extended-thinking output tokens
+	InputPerM       float64
+	OutputPerM      float64
+	CachedInputPerM float64
+	CacheWritePerM  float64
+	ReasoningPerM   float64
+
+	LongContextThreshold int
+	LongInputPerM        float64
+	LongOutputPerM       float64
+	LongCachedInputPerM  float64
+	LongCacheWritePerM   float64
+
+	Source       string
+	SourceURL    string
+	Estimated    bool
+	ExplicitFree bool
 }
 
 // UsageStore is the persistence surface Meter needs. *store.UsageRepo satisfies
@@ -38,11 +48,14 @@ type UsageStore interface {
 
 // Meter records usage rows and computes cost from a pricing table.
 type Meter struct {
-	usage       UsageStore
+	usage UsageStore
+
+	pricingMu   sync.RWMutex
 	pricing     map[string]Price // provider-level fallback
-	modelPrices map[string]Price // provider/model-level (e.g. "openai/gpt-4o")
-	hub         *usagehub.Hub    // notifies subscribers of new usage records
-	async       *AsyncWriter
+	modelPrices map[string]Price // provider/model-level
+
+	hub   *usagehub.Hub
+	async *AsyncWriter
 }
 
 // SetHub installs a usage event hub. When set, the meter publishes an event
@@ -95,27 +108,33 @@ func (m *Meter) Close(timeout time.Duration) {
 	}
 }
 
-// Event captures the facts about one completed (or cached) request.
+// Event captures the terminal accounting facts for one inbound request.
 type Event struct {
+	RequestID string
 	TenantID  string
 	ProjectID string
 	APIKeyID  string
 	Provider  string
 	Model     string
 	AccountID string
-	Client    string // detected calling tool (claude-code, codex, ...) or "unknown"
-	Usage     core.Usage
-	CacheHit  bool
-	Latency   time.Duration
-	TTFT      time.Duration // time-to-first-token (0 if not measured)
+	Client    string
+	Status    string
+	ErrorKind string
+
+	Usage           core.Usage
+	UsageSource     string // provider | estimated | cache | none
+	CacheHit        bool
+	Latency         time.Duration // winning upstream attempt
+	EndToEndLatency time.Duration
+	TTFT            time.Duration
 
 	// Token-saving analytics.
-	SlimStats      *SlimSnapshot     // nil when RTK did not fire
-	SlimActive     bool              // RTK slimmer was enabled for this request
-	CavemanActive  bool              // caveman output compression was active
-	TerseActive    bool              // terse output compression was active
-	HeadroomStats  *HeadroomSnapshot // nil when Headroom did not yield non-phantom savings
-	PonytailActive bool              // ponytail output injection was active
+	SlimStats      *SlimSnapshot
+	SlimActive     bool
+	CavemanActive  bool
+	TerseActive    bool
+	HeadroomStats  *HeadroomSnapshot
+	PonytailActive bool
 }
 
 // SlimSnapshot captures the RTK slimmer's per-request compression results.
@@ -134,104 +153,105 @@ type HeadroomSnapshot struct {
 	Active      bool
 }
 
-// resolvePrice looks up the price for a provider/model pair. It tries
-// "provider/model" first, then "provider", then returns a zero price.
+// resolvePrice is retained for internal compatibility; callers that need
+// provenance should use ResolvePrice.
 func (m *Meter) resolvePrice(provider, model string) Price {
-	// Try exact model match first.
-	if model != "" {
-		if p, ok := m.modelPrices[provider+"/"+model]; ok {
-			return p
+	return m.ResolvePrice(provider, model).Price
+}
+
+// CostMicros returns the compatibility micro-USD total. CostNanos from
+// CalculateCost is authoritative for analytics and historical aggregation.
+func (m *Meter) CostMicros(provider, model string, u core.Usage, cacheHit bool) int64 {
+	return m.CalculateCost(provider, model, u, cacheHit, 0).CostMicros
+}
+
+// Record persists a canonical terminal request row and returns its actual cost
+// in micro-USD for the existing budget interface.
+func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
+	u := clampUsage(ev.Usage)
+	status := ev.Status
+	if status == "" {
+		if ev.CacheHit {
+			status = "cache_hit"
+		} else {
+			status = "success"
 		}
 	}
-	// Fall back to provider-level.
-	if p, ok := m.pricing[provider]; ok {
-		return p
+	usageSource := ev.UsageSource
+	if usageSource == "" {
+		switch {
+		case ev.CacheHit:
+			usageSource = "cache"
+		case u.PromptTokens+u.CompletionTokens > 0:
+			usageSource = "provider"
+		default:
+			usageSource = "none"
+		}
 	}
-	return Price{}
-}
-
-// CostMicros returns the cost of a usage event in micros of USD. Cached
-// requests cost nothing (the whole point of the cache). Cached read tokens
-// use the discounted CachedInputPerM rate; cache write tokens use the
-// (often higher) CacheWritePerM rate. Reasoning tokens use the ReasoningPerM
-// rate when set.
-func (m *Meter) CostMicros(provider, model string, u core.Usage, cacheHit bool) int64 {
-	if cacheHit {
-		return 0
-	}
-	p := m.resolvePrice(provider, model)
-
-	// Standard input tokens = total input minus cache reads and writes.
-	standardInput := u.PromptTokens - u.CachedTokens - u.CacheWriteTokens
-	if standardInput < 0 {
-		standardInput = 0
-	}
-
-	// Cost breakdown:
-	//   standard input     * InputPerM
-	// + cache-read input   * CachedInputPerM  (often 50-90% off InputPerM)
-	// + cache-write input  * CacheWritePerM   (often 25% above InputPerM)
-	// + reasoning tokens   * ReasoningPerM    (often same as OutputPerM)
-	// + completion tokens  * OutputPerM
-	inputCost := float64(standardInput) * p.InputPerM
-	cachedReadCost := float64(u.CachedTokens) * p.CachedInputPerM
-	cacheWriteCost := float64(u.CacheWriteTokens) * p.CacheWritePerM
-	reasoningCost := float64(u.ReasoningTokens) * p.ReasoningPerM
-	outputCost := float64(u.CompletionTokens) * p.OutputPerM
-
-	return int64(inputCost + cachedReadCost + cacheWriteCost + reasoningCost + outputCost)
-}
-
-// Record persists a usage row for an event and returns the computed cost.
-func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
-	cost := m.CostMicros(ev.Provider, ev.Model, ev.Usage, ev.CacheHit)
-	rec := store.UsageRecord{
-		ID:               uuid.NewString(),
-		TenantID:         ev.TenantID,
-		ProjectID:        ev.ProjectID,
-		APIKeyID:         ev.APIKeyID,
-		Provider:         ev.Provider,
-		Model:            ev.Model,
-		AccountID:        ev.AccountID,
-		Client:           ev.Client,
-		PromptTokens:     ev.Usage.PromptTokens,
-		CompletionTokens: ev.Usage.CompletionTokens,
-		CachedTokens:     ev.Usage.CachedTokens,
-		CacheWriteTokens: ev.Usage.CacheWriteTokens,
-		CostMicros:       cost,
-		CacheHit:         ev.CacheHit,
-		LatencyMS:        int(ev.Latency.Milliseconds()),
-		TTFTMS:           int(ev.TTFT.Milliseconds()),
-		CavemanActive:    ev.CavemanActive,
-		SlimActive:       ev.SlimActive,
-		TerseActive:      ev.TerseActive,
-		PonytailActive:   ev.PonytailActive,
-		CreatedAt:        time.Now(),
-	}
+	savedTokens := 0
 	if ev.SlimStats != nil {
-		rec.SlimBytesSaved = ev.SlimStats.BytesSaved
-		rec.SlimTokensSaved = ev.SlimStats.TokensSaved
-		rec.SlimRules = ev.SlimStats.Rules
+		savedTokens += ev.SlimStats.TokensSaved
 	}
 	if ev.HeadroomStats != nil {
-		rec.HeadroomTokensSaved = ev.HeadroomStats.TokensSaved
-		rec.HeadroomBytesSaved = ev.HeadroomStats.BytesSaved
-		rec.HeadroomActive = ev.HeadroomStats.Active
+		savedTokens += ev.HeadroomStats.TokensSaved
+	}
+	var cost CostBreakdown
+	if u.PromptTokens+u.CompletionTokens == 0 && !ev.CacheHit {
+		// A terminal request without upstream usage has no applicable price,
+		// including a nominally successful response whose provider omitted usage.
+		// Do not inflate coverage merely because the target exists in the catalog.
+		cost.Pricing = PricingMatch{Status: "none", MatchKind: "none"}
+	} else {
+		cost = m.CalculateCost(ev.Provider, ev.Model, u, ev.CacheHit, savedTokens)
+	}
+	endToEnd := ev.EndToEndLatency
+	if endToEnd <= 0 {
+		endToEnd = ev.Latency
+	}
+	recordedAt := time.Now().UTC()
+	var pricingAsOf *time.Time
+	if cost.Pricing.Status != "missing" && cost.Pricing.Status != "none" {
+		pricingAsOf = &recordedAt
+	}
+	rec := store.UsageRecord{
+		ID: uuid.NewString(), RequestID: ev.RequestID,
+		TenantID: ev.TenantID, ProjectID: ev.ProjectID, APIKeyID: ev.APIKeyID,
+		Provider: ev.Provider, Model: ev.Model, AccountID: ev.AccountID, Client: ev.Client,
+		Status: status, ErrorKind: ev.ErrorKind, UsageSource: usageSource,
+		PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens,
+		CachedTokens: u.CachedTokens, CacheWriteTokens: u.CacheWriteTokens,
+		ReasoningTokens: u.ReasoningTokens,
+		CostMicros:      cost.CostMicros, CostNanos: cost.CostNanos,
+		InputCostNanos: cost.InputCostNanos, CachedCostNanos: cost.CachedCostNanos,
+		CacheWriteCostNanos: cost.CacheWriteCostNanos, OutputCostNanos: cost.OutputCostNanos,
+		ReasoningCostNanos: cost.ReasoningCostNanos, AvoidedCostNanos: cost.AvoidedCostNanos,
+		SavedCostNanos: cost.SavedCostNanos,
+		PricingStatus:  cost.Pricing.Status, PricingSource: cost.Pricing.Source, PricingKey: cost.Pricing.Key,
+		PricingMatchKind: cost.Pricing.MatchKind, PricingSourceURL: cost.Pricing.SourceURL,
+		PricingAsOf:   pricingAsOf,
+		InputRatePerM: cost.InputRatePerM, CachedRatePerM: cost.CachedRatePerM,
+		CacheWriteRatePerM: cost.CacheWriteRatePerM, OutputRatePerM: cost.OutputRatePerM,
+		ReasoningRatePerM: cost.ReasoningRatePerM,
+		CacheHit:          ev.CacheHit, LatencyMS: int(endToEnd.Milliseconds()),
+		UpstreamLatencyMS: int(ev.Latency.Milliseconds()), EndToEndLatencyMS: int(endToEnd.Milliseconds()),
+		TTFTMS: int(ev.TTFT.Milliseconds()), CavemanActive: ev.CavemanActive,
+		SlimActive: ev.SlimActive, TerseActive: ev.TerseActive, PonytailActive: ev.PonytailActive,
+		CreatedAt: recordedAt,
+	}
+	if ev.SlimStats != nil {
+		rec.SlimBytesSaved, rec.SlimTokensSaved, rec.SlimRules = ev.SlimStats.BytesSaved, ev.SlimStats.TokensSaved, ev.SlimStats.Rules
+	}
+	if ev.HeadroomStats != nil {
+		rec.HeadroomTokensSaved, rec.HeadroomBytesSaved, rec.HeadroomActive = ev.HeadroomStats.TokensSaved, ev.HeadroomStats.BytesSaved, ev.HeadroomStats.Active
 	}
 	if err := m.recordUsage(ctx, rec); err != nil {
-		return cost, err
+		return cost.CostMicros, err
 	}
-	// Notify SSE subscribers of the new usage record for near-real-time
-	// dashboard updates.
 	if m.hub != nil {
-		m.hub.Publish(usagehub.Event{
-			Provider:  ev.Provider,
-			Model:     ev.Model,
-			AccountID: ev.AccountID,
-			Tokens:    ev.Usage.PromptTokens + ev.Usage.CompletionTokens,
-		})
+		m.hub.Publish(usagehub.Event{Provider: ev.Provider, Model: ev.Model, AccountID: ev.AccountID,
+			Tokens: u.PromptTokens + u.CompletionTokens})
 	}
-	return cost, nil
+	return cost.CostMicros, nil
 }
 
 func (m *Meter) recordUsage(ctx context.Context, rec store.UsageRecord) error {

@@ -51,7 +51,7 @@ func sinceForPeriod(period, tz string) time.Time {
 // adminUsageInsights returns the rich payload that powers the Usage page: the
 // per-provider routing breakdown, a bucketed activity-over-time series, recent
 // activity rows, and headline metrics (success rate, average latency).
-func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
+func (s *Server) adminUsageInsightsLegacy(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
 	cacheKey := "insights|" + period + "|" + tz
@@ -399,10 +399,9 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 	out := make([]map[string]any, 0, len(accs))
 
-	for i, a := range accs {
+	for _, a := range accs {
 		u := usageByID[a.ID]
 		status := "active"
 		if a.Disabled {
@@ -419,9 +418,16 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			outputPerM = spec.OutputPerM
 			providerNotice = spec.Notice
 		}
-		usageType := "token"
-		if connectors.GetQuotaSource(a.Provider) != nil {
+		quotaSource := connectors.GetQuotaSource(a.Provider)
+		quotaSupported := quotaSource != nil
+		quotaState := "usage_only"
+		usageType := "token" // Kept for API compatibility; this is not a paid/free classification.
+		if quotaSupported {
 			usageType = "credit"
+			quotaState = "pending"
+			if a.Disabled {
+				quotaState = "paused"
+			}
 		}
 		entry := map[string]any{
 			"id":                 a.ID,
@@ -432,6 +438,8 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			"priority":           a.Priority,
 			"status":             status,
 			"usage_type":         usageType,
+			"quota_supported":    quotaSupported,
+			"quota_state":        quotaState,
 			"total_requests":     u.TotalRequests,
 			"prompt_tokens":      u.PromptTokens,
 			"completion_tokens":  u.CompletionTokens,
@@ -448,7 +456,7 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 
 		// Fetch upstream quota for providers that support it (e.g. Kiro) concurrently.
-		if qs := connectors.GetQuotaSource(a.Provider); qs != nil && !a.Disabled {
+		if quotaSource != nil && !a.Disabled {
 			// Refresh OAuth access tokens before probing so expired tokens
 			// don't silently suppress the quota/credits detail box. Mirrors
 			// the refresh-then-probe pattern in validateAccountCredentials.
@@ -460,7 +468,7 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			if creds, err := s.vault.Open(quotaAcc); err == nil {
 				wg.Add(1)
-				go func(idx int, qs connectors.QuotaSource, creds core.Credentials) {
+				go func(target map[string]any, qs connectors.QuotaSource, creds core.Credentials) {
 					defer wg.Done()
 					quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 					quota, qerr := qs.FetchQuota(quotaCtx, creds)
@@ -477,15 +485,22 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 							})
 						}
 
-						mu.Lock()
-						out[idx]["plan_name"] = quota.PlanName
-						out[idx]["message"] = quota.Message
+						target["plan_name"] = quota.PlanName
+						target["message"] = quota.Message
 						if len(quotas) > 0 {
-							out[idx]["upstream_quotas"] = quotas
+							target["quota_state"] = "reported"
+							target["upstream_quotas"] = quotas
+						} else {
+							target["quota_state"] = "unavailable"
 						}
-						mu.Unlock()
+					} else {
+						target["quota_state"] = "error"
+						target["message"] = "Upstream quota could not be refreshed."
 					}
-				}(i, qs, creds)
+				}(entry, quotaSource, creds)
+			} else {
+				entry["quota_state"] = "error"
+				entry["message"] = "Credentials could not be opened for quota refresh."
 			}
 		}
 	}

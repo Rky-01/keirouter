@@ -1,6 +1,6 @@
 // Reusable UI primitives styled with the KeiRouter design system. Calm,
 // generously spaced, soft shadows and rounded surfaces — no gradients or neon.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -360,39 +360,105 @@ export function Modal({
   title: ReactNode;
   subtitle?: string;
   children: ReactNode;
-  maxWidth?: string;
+	maxWidth?: string;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+	const dialogRef = useRef<HTMLDivElement>(null);
+	const onCloseRef = useRef(onClose);
+	const titleId = useId();
+
+	useEffect(() => {
+		onCloseRef.current = onClose;
+	}, [onClose]);
+
+	useEffect(() => {
+		if (!open) return;
+		const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		const dialog = dialogRef.current;
+		const focusableSelector = [
+			"button:not([disabled])",
+			"[href]",
+			"input:not([disabled])",
+			"select:not([disabled])",
+			"textarea:not([disabled])",
+			"[tabindex]:not([tabindex='-1'])",
+			"[contenteditable='true']",
+		].join(",");
+		const focusableElements = () =>
+			Array.from(dialog?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])
+				.filter((element) => element.getAttribute("aria-hidden") !== "true");
+
+		const frame = window.requestAnimationFrame(() => {
+			const initial = dialog?.querySelector<HTMLElement>("[data-modal-autofocus]")
+				?? focusableElements()[0]
+				?? dialog;
+			initial?.focus();
+		});
+
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				onCloseRef.current();
+				return;
+			}
+			if (event.key !== "Tab" || !dialog) return;
+			const elements = focusableElements();
+			if (elements.length === 0) {
+				event.preventDefault();
+				dialog.focus();
+				return;
+			}
+			const first = elements[0];
+			const last = elements[elements.length - 1];
+			const active = document.activeElement;
+			if (event.shiftKey && (active === first || !dialog.contains(active))) {
+				event.preventDefault();
+				last.focus();
+			} else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+				event.preventDefault();
+				first.focus();
+			}
+		};
+		const onFocusIn = (event: FocusEvent) => {
+			if (dialog && event.target instanceof Node && !dialog.contains(event.target)) {
+				dialog.focus();
+			}
+		};
+		document.addEventListener("keydown", onKey);
+		document.addEventListener("focusin", onFocusIn);
+		return () => {
+			window.cancelAnimationFrame(frame);
+			document.removeEventListener("keydown", onKey);
+			document.removeEventListener("focusin", onFocusIn);
+			if (previousFocus?.isConnected) previousFocus.focus();
+		};
+	}, [open]);
 
   if (!open) return null;
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={typeof title === "string" ? title : undefined}
-    >
-      <div
-        className={`w-full ${maxWidth} rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <div>
-            <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+	return (
+		<div
+			className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+			onClick={onClose}
+		>
+			<div
+				ref={dialogRef}
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby={titleId}
+				tabIndex={-1}
+				className={`w-full ${maxWidth} rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]`}
+				onClick={(e) => e.stopPropagation()}
+			>
+				<div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+					<div>
+						<h2 id={titleId} className="text-base font-semibold tracking-tight">{title}</h2>
             {subtitle && <p className="mt-0.5 text-sm text-[var(--text-muted)]">{subtitle}</p>}
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
+					<button
+						type="button"
+						onClick={onClose}
+						aria-label="Close"
+						data-modal-autofocus
             className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
           >
             <X className="h-4 w-4" />
@@ -421,6 +487,7 @@ export function TabBar<T extends string>({
         return (
           <button
             key={tab.value}
+            type="button"
             role="tab"
             aria-selected={isActive}
             onClick={() => onChange(tab.value)}

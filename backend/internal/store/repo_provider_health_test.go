@@ -15,24 +15,24 @@ func TestProviderHealthCurrent_UpsertAndGet(t *testing.T) {
 
 	now := time.Now().UTC()
 	cur := ProviderHealthCurrent{
-		ID:                "h1",
-		Provider:          "openai",
-		ProviderAccountID: "acc_1",
-		Model:             "gpt-4o",
-		Capability:        "chat_completions",
-		HealthStatus:      "degraded",
-		HealthScore:       72,
-		SuccessRate:       0.912,
-		ErrorRate:         0.088,
-		RequestCount:      1000,
-		FallbackCount:     37,
-		LatencyP95Ms:      intPtr9400(),
+		ID:                  "h1",
+		Provider:            "openai",
+		ProviderAccountID:   "acc_1",
+		Model:               "gpt-4o",
+		Capability:          "chat_completions",
+		HealthStatus:        "degraded",
+		HealthScore:         72,
+		SuccessRate:         0.912,
+		ErrorRate:           0.088,
+		RequestCount:        1000,
+		FallbackCount:       37,
+		LatencyP95Ms:        intPtr9400(),
 		ConsecutiveFailures: 2,
-		MainIssue:         strPtr("rate_limited"),
-		Recommendation:    strPtr("lower concurrency"),
-		LastSuccessAt:     &now,
-		LastFailureAt:     &now,
-		LastUpdatedAt:     now,
+		MainIssue:           strPtr("rate_limited"),
+		Recommendation:      strPtr("lower concurrency"),
+		LastSuccessAt:       &now,
+		LastFailureAt:       &now,
+		LastUpdatedAt:       now,
 	}
 	require.NoError(t, repo.UpsertCurrent(ctx, cur))
 
@@ -138,10 +138,44 @@ func TestProviderHealthSnapshot_InsertAndList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snaps, 1)
 	require.Equal(t, int64(100), snaps[0].RequestCount)
+
+	// A late event corrects the same bucket identity instead of appending a
+	// duplicate historical row.
+	snap.ID = "s2"
+	snap.RequestCount = 125
+	snap.SuccessCount = 117
+	require.NoError(t, repo.InsertSnapshot(ctx, snap))
+	snaps, err = repo.ListSnapshots(ctx, "openai", "", "gpt-4o", "", now.Add(-time.Hour))
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+	require.Equal(t, "s2", snaps[0].ID)
+	require.Equal(t, int64(125), snaps[0].RequestCount)
+}
+
+func TestProviderHealthCurrent_DeleteTrafficPreservesProbeOnlyRow(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	repo := db.ProviderHealth()
+	now := time.Now().UTC()
+
+	require.NoError(t, repo.UpsertCurrent(ctx, ProviderHealthCurrent{
+		ID: "traffic", Provider: "openai", Model: "gpt-4o", Capability: "chat_completions",
+		HealthStatus: "healthy", HealthScore: 100, RequestCount: 4, LastUpdatedAt: now.Add(-time.Minute),
+	}))
+	require.NoError(t, repo.UpsertCurrent(ctx, ProviderHealthCurrent{
+		ID: "probe", Provider: "anthropic", Model: "claude", Capability: "chat_completions",
+		HealthStatus: "healthy", HealthScore: 100, RequestCount: 0, LastProbeAt: &now, LastUpdatedAt: now,
+	}))
+
+	require.NoError(t, repo.DeleteTrafficCurrent(ctx, "openai", "", "gpt-4o", "chat_completions", now))
+	_, err := repo.GetCurrent(ctx, "openai", "", "gpt-4o", "chat_completions")
+	require.ErrorIs(t, err, ErrNotFound)
+	_, err = repo.GetCurrent(ctx, "anthropic", "", "claude", "chat_completions")
+	require.NoError(t, err)
 }
 
 // helpers local to this test file to avoid touching repo helpers.
-func intPtr9400() *int   { v := 9400; return &v }
-func intPtr200() *int    { v := 200; return &v }
-func intPtr1200() *int   { v := 1200; return &v }
+func intPtr9400() *int        { v := 9400; return &v }
+func intPtr200() *int         { v := 200; return &v }
+func intPtr1200() *int        { v := 1200; return &v }
 func strPtr(s string) *string { return &s }

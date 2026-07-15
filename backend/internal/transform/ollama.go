@@ -283,6 +283,7 @@ func (OllamaCodec) ParseResponse(body []byte, model string) (*core.ChatResponse,
 			PromptTokens:     raw.PromptEvalCount,
 			CompletionTokens: raw.EvalCount,
 			TotalTokens:      raw.PromptEvalCount + raw.EvalCount,
+			Source:           core.UsageSourceProvider,
 		},
 	}, nil
 }
@@ -384,6 +385,7 @@ func (OllamaCodec) ParseStreamLine(line []byte, model string) ([]core.StreamChun
 				PromptTokens:     raw.PromptEvalCount,
 				CompletionTokens: raw.EvalCount,
 				TotalTokens:      raw.PromptEvalCount + raw.EvalCount,
+				Source:           core.UsageSourceProvider,
 			},
 		})
 	}
