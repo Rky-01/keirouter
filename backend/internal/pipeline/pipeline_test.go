@@ -2,9 +2,33 @@ package pipeline
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
+
+func TestShouldRetryStreamRateLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		error   *core.ProviderError
+		retries int
+		want    bool
+	}{
+		{name: "transient other provider", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, want: true},
+		{name: "kiro account limit", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "kiro"}, want: false},
+		{name: "explicit reset", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Minute}, want: false},
+		{name: "retry budget exhausted", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, retries: maxRateLimitRetries, want: false},
+		{name: "not a rate limit", error: &core.ProviderError{Kind: core.ErrUpstream, Provider: "openai"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryStreamRateLimit(tt.error, tt.retries); got != tt.want {
+				t.Fatalf("shouldRetryStreamRateLimit() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestExtractUsageFromStream_OpenAI(t *testing.T) {
 	// OpenAI format: usage in the last chunk before [DONE].

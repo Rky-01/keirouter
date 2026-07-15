@@ -424,21 +424,24 @@ type StreamResult struct {
 	DirectCompleteFunc func(error)
 }
 
-// maxRateLimitRetries is how many times the pipeline will re-plan and retry
-// after a rate-limit (429) error, waiting for the per-account cooldown to
-// expire between attempts. With a single account this avoids giving up
-// immediately on a transient 429.
+// maxRateLimitRetries is how many times the pipeline will re-plan and retry a
+// transient rate-limit that has no explicit upstream reset time. Providers with
+// account-wide limits can opt out so one inbound request is never amplified.
 const maxRateLimitRetries = 3
+
+func shouldRetryStreamRateLimit(pe *core.ProviderError, retries int) bool {
+	return pe != nil && pe.Kind == core.ErrRateLimit && pe.Fallbackable() &&
+		pe.Provider != "kiro" && pe.RetryAfter <= 0 && retries < maxRateLimitRetries
+}
 
 // Stream runs a streaming request with fallback. Fallback applies only to the
 // connection-establishment phase; once the first attempt's channel is returned,
 // errors surface as ChunkError on that channel. Usage metering happens in a
 // goroutine that observes the final usage chunk.
 //
-// When all attempts fail with a rate-limit (429) and the error is fallbackable,
-// the pipeline re-plans after a short wait (letting the account cooldown
-// expire) and retries up to maxRateLimitRetries times. This prevents transient
-// 429s from being fatal when only a single account is configured.
+// When all attempts fail with a transient rate-limit (429) and the error is
+// fallbackable, the pipeline may re-plan after a short wait. Explicit upstream
+// reset times and account-wide Kiro limits are returned immediately.
 func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Options) (*StreamResult, error) {
 	requestStarted := time.Now()
 	if err := p.preflight(ctx, req, opts); err != nil {
@@ -493,9 +496,11 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 			return sr, nil
 		}
 
-		// Only retry on rate-limit errors that are still fallbackable.
+		// Never turn an account-wide Kiro limit into another upstream request.
+		// An explicit reset time is also authoritative and must be returned to the
+		// caller instead of being replaced by this short local retry loop.
 		pe := providerErrorForAttempt(sErr, lastAttempt)
-		if pe.Kind != core.ErrRateLimit || !pe.Fallbackable() || rlRetries >= maxRateLimitRetries {
+		if !shouldRetryStreamRateLimit(pe, rlRetries) {
 			release(0)
 			if !budgetReleased {
 				p.budgetRelease(scope)

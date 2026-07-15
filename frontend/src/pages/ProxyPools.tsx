@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Network, Plus, Trash2, Play, Upload, Pencil, X, Check,
   ToggleLeft, ToggleRight, Loader2, CheckCircle2, XCircle, CircleDot,
-  RefreshCw, AlertCircle, FileText,
+  RefreshCw, AlertCircle, FileText, ExternalLink, Cloud, Zap, Globe,
 } from "lucide-react";
 import { api, type ProxyPool } from "../lib/api";
 import { PageHeader } from "../components/Layout";
@@ -16,10 +16,15 @@ import {
 export function ProxyPoolsPage() {
   const qc = useQueryClient();
   const toast = useToast();
-  const pools = useQuery({ queryKey: ["proxy-pools"], queryFn: () => api.listProxyPools() });
+  const pools = useQuery({
+    queryKey: ["proxy-pools"],
+    queryFn: () => api.listProxyPools(),
+    refetchInterval: (query) => query.state.data?.pools.some((pool) => pool.test_status === "testing") ? 2000 : false,
+  });
 
   const [showCreate, setShowCreate] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
+  const [showCloudflareDeploy, setShowCloudflareDeploy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Selection state
@@ -44,10 +49,11 @@ export function ProxyPoolsPage() {
     mutationFn: (id: string) => api.testProxyPool(id),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["proxy-pools"] });
-      toast.success(
-        "Connectivity test passed",
-        `Proxy is reachable and responding. Status: ${data.status}.`,
-      );
+      if (data.status === "active") {
+        toast.success("Connectivity test passed", "Proxy is reachable and responding.");
+      } else {
+        toast.error("Connectivity test failed", data.error || `Proxy status: ${data.status}`);
+      }
     },
     onError: (e: Error) => toast.error("Connectivity test failed", e.message),
   });
@@ -94,6 +100,10 @@ export function ProxyPoolsPage() {
         description="Route upstream traffic through proxy pools for resilience and geo-distribution."
         action={
           <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={() => setShowCloudflareDeploy(true)}>
+              <Cloud className="h-4 w-4 text-orange-500" />
+              Deploy Relay
+            </Button>
             <Button variant="ghost" onClick={() => setShowBatch(!showBatch)}>
               <Upload className="h-4 w-4" />
               Batch Import
@@ -107,6 +117,7 @@ export function ProxyPoolsPage() {
       />
 
       <div className="space-y-4">
+        <CloudflareDeployModal open={showCloudflareDeploy} onClose={() => setShowCloudflareDeploy(false)} />
         {/* Create / Edit form */}
         {(showCreate || editingId) && (
           <PoolForm
@@ -213,25 +224,43 @@ function PoolRow({ pool, selected, onSelect, onEdit, onDelete, onTest, onToggle,
           <span className="text-sm font-medium">{pool.name}</span>
           <StatusBadge status={pool.test_status} />
           {!pool.is_active && <Badge tone="neutral">inactive</Badge>}
-          {pool.type !== "http" && <Badge tone="accent">{pool.type} relay</Badge>}
+          {pool.type === "cloudflare" && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+              <Cloud className="h-3 w-3" /> cloudflare relay
+            </span>
+          )}
+          {pool.type === "vercel" && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+              <Zap className="h-3 w-3" /> vercel relay
+            </span>
+          )}
+          {pool.type === "deno" && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+              <Globe className="h-3 w-3" /> deno relay
+            </span>
+          )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--text-muted)]">
           <span className="truncate font-mono">{maskUrl(pool.proxy_url)}</span>
           {pool.no_proxy && <span>no-proxy: {pool.no_proxy}</span>}
           {pool.last_tested && <span>tested {relTime(pool.last_tested)}</span>}
-          {pool.last_error && <span className="text-red-500 dark:text-red-400">{pool.last_error}</span>}
+          {pool.last_error && (
+            <span className={pool.test_status === "testing" ? "text-amber-600 dark:text-amber-400" : "text-red-500 dark:text-red-400"}>
+              {pool.last_error}
+            </span>
+          )}
           {pool.strict && <span className="font-medium">strict</span>}
         </div>
       </div>
 
       {/* Actions */}
       <div className="flex shrink-0 items-center gap-0.5">
-        <button onClick={onToggle}
-          className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]"
-          title={pool.is_active ? "Deactivate" : "Activate"}>
+        <button onClick={onToggle} disabled={pool.test_status === "testing"}
+          className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+          title={pool.test_status === "testing" ? "Waiting for relay readiness" : pool.is_active ? "Deactivate" : "Activate"}>
           {pool.is_active ? <ToggleRight className="h-4 w-4 text-emerald-500 dark:text-emerald-400" /> : <ToggleLeft className="h-4 w-4" />}
         </button>
-        <button onClick={onTest} disabled={testing}
+        <button onClick={onTest} disabled={testing || pool.test_status === "testing"}
           className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]" title="Test">
           {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
         </button>
@@ -288,7 +317,7 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
       open
       onClose={onClose}
       title={isEdit ? "Edit Proxy Pool" : "Add Proxy Pool"}
-      subtitle={isEdit ? `Editing "${pool?.name}"` : "Configure a new proxy endpoint for upstream routing."}
+      subtitle={isEdit ? `Editing "${pool?.name}"` : "Configure a proxy endpoint for upstream routing."}
     >
       <div className="space-y-4 px-6 py-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -299,9 +328,11 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
             <Input value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} placeholder="http://user:pass@host:port" className="font-mono" />
           </Field>
         </div>
+
         <Field label="No Proxy (comma-separated hosts to bypass)">
           <Input value={noProxy} onChange={(e) => setNoProxy(e.target.value)} placeholder="localhost,127.0.0.1,.internal" />
         </Field>
+
         <div className="flex items-center gap-6">
           <label className="flex items-center gap-2 text-xs">
             <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)}
@@ -323,6 +354,71 @@ function PoolForm({ pool, onClose }: { pool?: ProxyPool; onClose: () => void }) 
             {isEdit ? "Save changes" : "Create pool"}
           </Button>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CloudflareDeployModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [accountID, setAccountID] = useState("");
+  const [apiToken, setAPIToken] = useState("");
+  const [projectName, setProjectName] = useState("");
+
+  const deploy = useMutation({
+    mutationFn: () => api.deployCloudflareRelay({
+      account_id: accountID.trim(),
+      api_token: apiToken.trim(),
+      project_name: projectName.trim() || undefined,
+    }),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["proxy-pools"] });
+      toast.success("Relay deployment started", `${result.name} was deployed. Readiness is checked automatically.`);
+      setAccountID("");
+      setAPIToken("");
+      setProjectName("");
+      onClose();
+    },
+    onError: (error: Error) => toast.error("Relay deployment failed", error.message),
+  });
+
+  return (
+    <Modal open={open} onClose={() => !deploy.isPending && onClose()} title="Deploy Cloudflare Relay">
+      <div className="space-y-4 px-6 py-5">
+        <div className="space-y-2 rounded-xl border border-orange-500/20 bg-orange-500/5 p-4 text-xs text-[var(--text-muted)]">
+          <p className="font-semibold text-[var(--text)]">Cloudflare Workers edge relay</p>
+          <p>Provider requests are forwarded through the deployed Worker and the resulting relay is added to this proxy pool automatically.</p>
+          <ol className="list-decimal space-y-1 pl-4">
+            <li>Create an API token with Account → Workers Scripts → Edit.</li>
+            <li>Select the account that owns the Worker.</li>
+            <li>Ensure the account has a workers.dev subdomain configured.</li>
+          </ol>
+        </div>
+        <Field label="Account ID">
+          <Input value={accountID} onChange={(event) => setAccountID(event.target.value)} placeholder="Cloudflare account ID" className="font-mono" />
+        </Field>
+        <Field label="API Token">
+          <Input type="password" value={apiToken} onChange={(event) => setAPIToken(event.target.value)} placeholder="Workers Scripts: Edit token" className="font-mono" />
+          <a
+            href="https://dash.cloudflare.com/profile/api-tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-orange-500 hover:underline"
+          >
+            Get Cloudflare API token <ExternalLink className="h-3 w-3" />
+          </a>
+        </Field>
+        <Field label="Worker Name (optional)">
+          <Input value={projectName} onChange={(event) => setProjectName(event.target.value.toLowerCase())} placeholder="my-relay" className="font-mono" />
+        </Field>
+        <div className="flex gap-2 border-t border-[var(--border)] pt-4">
+          <Button onClick={() => deploy.mutate()} disabled={!accountID.trim() || !apiToken.trim() || deploy.isPending}>
+            {deploy.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cloud className="h-4 w-4" />}
+            {deploy.isPending ? "Deploying…" : "Deploy Worker"}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={deploy.isPending}>Cancel</Button>
         </div>
       </div>
     </Modal>
@@ -498,6 +594,13 @@ function BatchImport({ onClose }: { onClose: () => void }) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
+  if (status === "testing") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+        <Loader2 className="h-3 w-3 animate-spin" /> deploying
+      </span>
+    );
+  }
   if (status === "active") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">

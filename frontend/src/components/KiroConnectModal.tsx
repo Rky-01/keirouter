@@ -5,7 +5,7 @@ import { api, type DeviceCode } from "../lib/api";
 import { Button, Input, Field, ErrorBanner } from "./ui";
 import { useToast } from "./Toast";
 
-type Method = "builder-id" | "idc" | "import" | "api-key";
+type Method = "builder-id" | "idc" | "import" | "cli-proxy" | "api-key";
 
 
 // KiroConnectModal implements the "Connect Kiro" flow: pick an auth method,
@@ -61,6 +61,7 @@ export function KiroConnectModal({ onClose }: { onClose: () => void }) {
         {method === "builder-id" && <DeviceFlow method="builder-id" onClose={onClose} />}
         {method === "idc" && <IDCFlow onClose={onClose} />}
         {method === "import" && <ImportFlow onClose={onClose} />}
+        {method === "cli-proxy" && <CLIProxyImportFlow onClose={onClose} />}
         {method === "api-key" && <APIKeyFlow onClose={onClose} />}
       </div>
 
@@ -90,6 +91,12 @@ function MethodSelect({ onSelect }: { onSelect: (m: Method) => void }) {
         title="Import Token"
         description="Paste refresh token from Kiro IDE."
         onClick={() => onSelect("import")}
+      />
+      <MethodCard
+        icon={FileUp}
+        title="Import CLIProxy API JSON"
+        description="Paste an external_idp auth JSON from a Microsoft login."
+        onClick={() => onSelect("cli-proxy")}
       />
       <MethodCard
         icon={KeyRound}
@@ -402,6 +409,61 @@ function ImportFlow({ onClose }: { onClose: () => void }) {
       {error && <ErrorBanner message={error} />}
       <Button className="w-full" onClick={submit} disabled={busy || !token.trim()}>
         {busy ? "Importing…" : "Import Token"}
+      </Button>
+    </div>
+  );
+}
+
+function CLIProxyImportFlow({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [rawJSON, setRawJSON] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const submit = async () => {
+    if (!rawJSON.trim()) {
+      setError("Please paste the auth JSON");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.kiroImportCLIProxy(rawJSON.trim());
+      setDone(true);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      toast.success("Kiro connected", "External identity credential imported successfully.");
+      setTimeout(onClose, 1200);
+    } catch (e) {
+      setError((e as Error).message);
+      toast.error("Import failed", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return <div className="px-6 py-6 text-sm">Connected. Refreshing accounts…</div>;
+  }
+
+  return (
+    <div className="space-y-4 px-6 py-5">
+      <p className="text-sm text-[var(--text-muted)]">
+        Paste the Kiro auth JSON containing <span className="font-mono">auth_method=external_idp</span>.
+        Only Microsoft login token endpoints are accepted.
+      </p>
+      <Field label="CLIProxy API Auth JSON">
+        <textarea
+          value={rawJSON}
+          onChange={(event) => setRawJSON(event.target.value)}
+          placeholder={'{"auth_method":"external_idp","access_token":"...","refresh_token":"...","client_id":"...","token_endpoint":"https://login.microsoftonline.com/.../oauth2/v2.0/token","profile_arn":"...","scopes":"..."}'}
+          className="min-h-44 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-3 font-mono text-xs focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/30"
+        />
+      </Field>
+      {error && <ErrorBanner message={error} />}
+      <Button className="w-full" onClick={submit} disabled={busy || !rawJSON.trim()}>
+        {busy ? "Importing…" : "Import CLIProxy API JSON"}
       </Button>
     </div>
   );

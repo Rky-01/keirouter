@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -620,19 +622,17 @@ func (s *Server) adminCreateProxyPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// SSRF Protection: Validate proxy URL before use
-	if err := httputil.ValidateProxyURL(body.ProxyURL); err != nil {
-		s.log.Warn("blocked suspicious proxy URL", "url", body.ProxyURL, "error", err)
-		writeError(w, http.StatusBadRequest, "invalid proxy_url: URL blocked by security policy")
-		return
-	}
-
 	poolType := body.Type
 	if poolType == "" {
 		poolType = "http"
 	}
 	if !validProxyPoolTypes[poolType] {
 		writeError(w, http.StatusBadRequest, "invalid pool type: must be http, vercel, cloudflare, or deno")
+		return
+	}
+	if err := validateProxyPoolURL(poolType, body.ProxyURL); err != nil {
+		s.log.Warn("blocked invalid proxy URL", "url", body.ProxyURL, "type", poolType, "error", err)
+		writeError(w, http.StatusBadRequest, "invalid proxy_url: "+err.Error())
 		return
 	}
 	active := true
@@ -676,9 +676,18 @@ func (s *Server) adminUpdateProxyPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Name != nil {
-		pool.Name = *body.Name
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "name cannot be empty")
+			return
+		}
+		pool.Name = name
 	}
 	if body.ProxyURL != nil {
+		if err := validateProxyPoolURL(pool.Type, *body.ProxyURL); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid proxy_url: "+err.Error())
+			return
+		}
 		pool.ProxyURL = *body.ProxyURL
 	}
 	if body.NoProxy != nil {
@@ -696,6 +705,23 @@ func (s *Server) adminUpdateProxyPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validateProxyPoolURL(poolType, rawURL string) error {
+	if strings.TrimSpace(rawURL) == "" {
+		return fmt.Errorf("URL is required")
+	}
+	if err := httputil.ValidateProxyURL(rawURL); err != nil {
+		return fmt.Errorf("URL blocked by security policy")
+	}
+	if poolType == "http" {
+		return nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("relay URL must use http or https")
+	}
+	return nil
 }
 
 func (s *Server) adminDeleteProxyPool(w http.ResponseWriter, r *http.Request) {
@@ -738,7 +764,7 @@ func (s *Server) adminTestProxyPool(w http.ResponseWriter, r *http.Request) {
 
 	pool.TestStatus = result.status
 	pool.LastError = result.lastError
-	// Preserve current is_active — don't force-enable on test pass.
+	pool.IsActive = result.status == "active"
 	_ = s.pools.Update(r.Context(), pool)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -750,9 +776,10 @@ func (s *Server) adminTestProxyPool(w http.ResponseWriter, r *http.Request) {
 }
 
 type proxyTestResult struct {
-	status    string
-	lastError string
-	elapsedMS int64
+	status     string
+	lastError  string
+	elapsedMS  int64
+	httpStatus int
 }
 
 // testProxyPoolConnectivity performs a real connectivity check against a proxy
@@ -788,9 +815,9 @@ func testHTTPPool(proxyURL string, timeout time.Duration) proxyTestResult {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return proxyTestResult{status: "error", lastError: fmt.Sprintf("proxy returned HTTP %d", resp.StatusCode), elapsedMS: elapsed}
+		return proxyTestResult{status: "error", lastError: fmt.Sprintf("proxy returned HTTP %d", resp.StatusCode), elapsedMS: elapsed, httpStatus: resp.StatusCode}
 	}
-	return proxyTestResult{status: "active", elapsedMS: elapsed}
+	return proxyTestResult{status: "active", elapsedMS: elapsed, httpStatus: resp.StatusCode}
 }
 
 func testRelayPool(relayURL string, timeout time.Duration) proxyTestResult {
@@ -800,18 +827,39 @@ func testRelayPool(relayURL string, timeout time.Duration) proxyTestResult {
 	if err != nil {
 		return proxyTestResult{status: "error", lastError: err.Error()}
 	}
-	req.Header.Set("x-relay-target", "https://httpbin.org")
-	req.Header.Set("x-relay-path", "/get")
+	req.Header.Set("x-relay-target", "https://echo.free.beeceptor.com")
+	req.Header.Set("x-relay-path", "/")
+	probeID := uuid.NewString()
+	req.Header.Set("x-keirouter-relay-probe", probeID)
 	resp, err := client.Do(req)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		return proxyTestResult{status: "error", lastError: err.Error(), elapsedMS: elapsed}
 	}
 	defer resp.Body.Close()
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return proxyTestResult{status: "error", lastError: fmt.Sprintf("relay returned HTTP %d", resp.StatusCode), elapsedMS: elapsed}
+		return proxyTestResult{status: "error", lastError: fmt.Sprintf("relay returned HTTP %d", resp.StatusCode), elapsedMS: elapsed, httpStatus: resp.StatusCode}
 	}
-	return proxyTestResult{status: "active", elapsedMS: elapsed}
+	if readErr != nil {
+		return proxyTestResult{status: "error", lastError: "could not read relay probe response", elapsedMS: elapsed, httpStatus: resp.StatusCode}
+	}
+	var echoed struct {
+		Headers map[string]any `json:"headers"`
+	}
+	if json.Unmarshal(raw, &echoed) != nil || !relayProbeHeaderMatches(echoed.Headers, probeID) {
+		return proxyTestResult{status: "error", lastError: "relay response did not confirm request forwarding", elapsedMS: elapsed, httpStatus: resp.StatusCode}
+	}
+	return proxyTestResult{status: "active", elapsedMS: elapsed, httpStatus: resp.StatusCode}
+}
+
+func relayProbeHeaderMatches(headers map[string]any, probeID string) bool {
+	for key, value := range headers {
+		if strings.EqualFold(key, "x-keirouter-relay-probe") && fmt.Sprint(value) == probeID {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- skills -----------------------------------------------------------------

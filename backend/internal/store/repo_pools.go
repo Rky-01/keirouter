@@ -17,7 +17,7 @@ type ProxyPool struct {
 	NoProxy    string
 	Strict     bool
 	IsActive   bool
-	TestStatus string // unknown | active | error
+	TestStatus string // unknown | testing | active | error
 	LastTested *time.Time
 	LastError  string
 	CreatedAt  time.Time

@@ -670,7 +670,7 @@ export interface ProxyPool {
   no_proxy: string;
   strict: boolean;
   is_active: boolean;
-  test_status: string; // unknown | active | error
+  test_status: string; // unknown | testing | active | error
   last_tested?: string;
   last_error?: string;
 }
@@ -1332,6 +1332,8 @@ export const api = {
   listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
   createProxyPool: (input: { name: string; type?: string; proxy_url: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
     request<{ id: string }>("POST", "/proxy-pools", input),
+  deployCloudflareRelay: (input: { account_id: string; api_token: string; project_name?: string }) =>
+    request<{ id: string; name: string; deploy_url: string; test_status: string }>("POST", "/proxy-pools/cloudflare-deploy", input),
   updateProxyPool: (id: string, patch: { name?: string; proxy_url?: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
     request<void>("PATCH", `/proxy-pools/${id}`, patch),
   deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${id}`),
@@ -1410,7 +1412,7 @@ export const api = {
 
   // Proxy pool test.
   testProxyPool: (id: string) =>
-    request<{ status: string; last_tested?: string }>("POST", `/proxy-pools/${id}/test`),
+    request<{ status: string; last_tested?: string; elapsed_ms?: number; error?: string }>("POST", `/proxy-pools/${id}/test`),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),
@@ -1454,6 +1456,8 @@ export const api = {
       refresh_token: refreshToken,
       label,
     }),
+  kiroImportCLIProxy: (json: string) =>
+    request<{ id: string; provider: string; email?: string }>("POST", "/kiro/import-cli-proxy", { json }),
 
 
   // Qoder connect flow (PKCE device-token poll). Mounted under /qoder (not

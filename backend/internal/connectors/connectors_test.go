@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/stretchr/testify/require"
@@ -94,6 +95,18 @@ func TestOpenAICompatible_MapsRateLimitError(t *testing.T) {
 	require.Equal(t, 429, pe.StatusCode)
 	require.Equal(t, "openai", pe.Provider)
 	require.True(t, pe.Fallbackable())
+}
+
+func TestHTTPStatusErrorParsesRetryAfterHTTPDate(t *testing.T) {
+	retryAt := time.Now().Add(90 * time.Second).UTC().Truncate(time.Second)
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{retryAt.Format(http.TimeFormat)}},
+	}
+
+	pe := core.AsProviderError(httpStatusError("kiro", "model", resp, []byte("limited")))
+	require.Greater(t, pe.RetryAfter, 85*time.Second)
+	require.LessOrEqual(t, pe.RetryAfter, 90*time.Second)
 }
 
 func TestOpenAICompatible_BadRequestNotFallbackable(t *testing.T) {

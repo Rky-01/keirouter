@@ -235,6 +235,9 @@ func refreshKiro(ctx context.Context, acc store.Account, refreshToken string) (*
 	if acc.Metadata != "" {
 		_ = json.Unmarshal([]byte(acc.Metadata), &meta)
 	}
+	if meta["kiro_auth_method"] == "external_idp" {
+		return KiroExternalIDPRefresh(ctx, refreshToken, meta)
+	}
 	clientID := meta["kiro_client_id"]
 	clientSecret := meta["kiro_client_secret"]
 	if clientID != "" && clientSecret != "" {

@@ -265,6 +265,22 @@ func TestPlanWith_BuiltInProviderVisionStrippableSkipsGuard(t *testing.T) {
 	require.NotEmpty(t, attempts)
 }
 
+func TestNoteFailureHonorsRateLimitRetryAfter(t *testing.T) {
+	ctx := context.Background()
+	d, db := newDispatchTest(t, testAccount("acc-rate-limited", 10))
+	started := time.Now()
+
+	d.NoteFailure(ctx, "acc-rate-limited", &core.ProviderError{
+		Kind:       core.ErrRateLimit,
+		RetryAfter: 4 * time.Minute,
+	})
+
+	account, err := db.Accounts().Get(ctx, "acc-rate-limited")
+	require.NoError(t, err)
+	require.NotNil(t, account.CooldownUntil)
+	require.WithinDuration(t, started.Add(4*time.Minute), *account.CooldownUntil, 2*time.Second)
+}
+
 func testAccountWithProvider(id, provider string, priority int) store.Account {
 	now := time.Now()
 	return store.Account{

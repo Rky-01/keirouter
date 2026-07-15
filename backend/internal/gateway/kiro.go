@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -23,6 +24,7 @@ func (s *Server) mountKiro(r chi.Router) {
 	r.Post("/kiro/device-start", s.kiroDeviceStart)
 	r.Post("/kiro/device-poll", s.kiroDevicePoll)
 	r.Post("/kiro/import", s.kiroImport)
+	r.Post("/kiro/import-cli-proxy", s.kiroImportCLIProxy)
 	r.Post("/kiro/api-key", s.kiroAPIKey)
 	r.Get("/kiro/health", s.kiroHealth)
 }
@@ -156,18 +158,47 @@ func (s *Server) kiroDevicePoll(w http.ResponseWriter, r *http.Request) {
 // SSO client credentials are stored.
 func (s *Server) kiroImport(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RefreshToken string `json:"refresh_token"`
-		Label        string `json:"label"`
+		RefreshToken      string `json:"refresh_token"`
+		RefreshTokenCamel string `json:"refreshToken"`
+		Label             string `json:"label"`
+		ClientID          string `json:"client_id"`
+		ClientIDCamel     string `json:"clientId"`
+		ClientSecret      string `json:"client_secret"`
+		ClientSecretCamel string `json:"clientSecret"`
+		Region            string `json:"region"`
+		ProfileARN        string `json:"profile_arn"`
+		ProfileARNCamel   string `json:"profileArn"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
+	body.RefreshToken = defaultStr(body.RefreshToken, body.RefreshTokenCamel)
+	body.ClientID = defaultStr(body.ClientID, body.ClientIDCamel)
+	body.ClientSecret = defaultStr(body.ClientSecret, body.ClientSecretCamel)
+	body.ProfileARN = defaultStr(body.ProfileARN, body.ProfileARNCamel)
 	if body.RefreshToken == "" {
 		writeError(w, http.StatusBadRequest, "refresh_token is required")
 		return
 	}
 
-	tokens, err := oauth.KiroValidateImportToken(r.Context(), body.RefreshToken)
+	if (body.ClientID == "") != (body.ClientSecret == "") {
+		writeError(w, http.StatusBadRequest, "client_id and client_secret must be provided together")
+		return
+	}
+
+	var tokens *oauth.Tokens
+	var err error
+	authMethod := "imported"
+	if body.ClientID != "" {
+		client := &oauth.KiroClient{
+			ClientID: body.ClientID, ClientSecret: body.ClientSecret,
+			Region: body.Region,
+		}
+		tokens, err = client.Refresh(r.Context(), body.RefreshToken)
+		authMethod = "idc"
+	} else {
+		tokens, err = oauth.KiroSocialRefresh(r.Context(), body.RefreshToken)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -175,15 +206,73 @@ func (s *Server) kiroImport(w http.ResponseWriter, r *http.Request) {
 	if tokens.Extra == nil {
 		tokens.Extra = map[string]string{}
 	}
-	tokens.Extra["kiro_auth_method"] = "imported"
+	tokens.Extra["kiro_auth_method"] = authMethod
+	if body.ProfileARN != "" {
+		tokens.Extra["kiro_profile_arn"] = body.ProfileARN
+	}
+	if body.ClientID != "" {
+		tokens.Extra["kiro_client_id"] = body.ClientID
+		tokens.Extra["kiro_client_secret"] = body.ClientSecret
+		tokens.Extra["kiro_region"] = defaultStr(body.Region, "us-east-1")
+	}
 
-	label := defaultStr(body.Label, "Kiro (imported)")
+	label := defaultStr(body.Label, kiroLabel(authMethod))
 	id, perr := s.persistOAuthAccount(r, "kiro", label, tokens)
 	if perr != nil {
 		writeError(w, http.StatusInternalServerError, perr.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "provider": "kiro"})
+}
+
+func (s *Server) kiroImportCLIProxy(w http.ResponseWriter, r *http.Request) {
+	if s.vault == nil {
+		writeError(w, http.StatusInternalServerError, errVaultUnconfigured.Error())
+		return
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read auth JSON")
+		return
+	}
+	tokens, err := oauth.NormalizeKiroExternalIDPAuth(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(tokens.ExpiresIn) * time.Second)
+	label := "Kiro (External IdP)"
+	if tokens.Email != "" {
+		label = tokens.Email
+	}
+	acc := store.Account{
+		ID: uuid.NewString(), TenantID: adminTenant, Provider: "kiro",
+		Label: label, AuthKind: store.AuthOAuth, Priority: 100,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.vault.Seal(&acc, vault.NewSecret{
+		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
+		ExpiresAt: &expiresAt, Metadata: tokens.Extra,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
+		return
+	}
+	if err := s.accounts.Create(r.Context(), acc); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "account creation failed"))
+		return
+	}
+	s.clearStaleProviderCooldowns(r.Context(), adminTenant, "kiro")
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"success":  true,
+		"id":       acc.ID,
+		"provider": "kiro",
+		"email":    tokens.Email,
+		"connection": map[string]any{
+			"id": acc.ID, "provider": "kiro", "email": tokens.Email,
+		},
+	})
 }
 
 // kiroAPIKey validates a long-lived CodeWhisperer API key and stores it as a

@@ -566,6 +566,10 @@ func httpStatusError(provider, model string, resp *http.Response, body []byte) e
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil {
 			pe.RetryAfter = time.Duration(secs) * time.Second
+		} else if retryAt, err := http.ParseTime(ra); err == nil {
+			if wait := time.Until(retryAt); wait > 0 {
+				pe.RetryAfter = wait
+			}
 		}
 	}
 	return pe

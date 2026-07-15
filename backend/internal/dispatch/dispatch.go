@@ -402,9 +402,6 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 		cooldown = d.exponentialCooldown(ctx, accountID)
 	case core.ErrQuotaExhausted:
 		cooldown = 30 * time.Minute
-		if err.RetryAfter > 0 {
-			cooldown = err.RetryAfter
-		}
 	case core.ErrAuth:
 		cooldown = 5 * time.Minute
 	case core.ErrUpstream, core.ErrTimeout:
@@ -415,7 +412,10 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 		return
 	}
 
-	if err.RetryAfter > 0 && err.Kind != core.ErrRateLimit {
+	// An upstream reset time is a lower bound. Never replace it with the much
+	// shorter local exponential delay, and never shorten a stricter local
+	// cooldown when an upstream sends a small Retry-After value.
+	if err.RetryAfter > cooldown {
 		cooldown = err.RetryAfter
 	}
 
