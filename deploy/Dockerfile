@@ -4,7 +4,7 @@
 FROM node:20-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
@@ -21,11 +21,9 @@ WORKDIR /src/backend
 ARG VERSION=dev
 ARG SOURCE_COMMIT=
 COPY backend/go.mod backend/go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN go mod download
 COPY backend/ .
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    VER="${VERSION}"; \
+RUN VER="${VERSION}"; \
     if [ -z "${VER}" ] || [ "${VER}" = "dev" ]; then \
       if [ -n "${SOURCE_COMMIT}" ]; then VER="${SOURCE_COMMIT}"; else VER="dev"; fi; \
     fi; \
@@ -48,7 +46,6 @@ COPY --from=frontend /src/frontend/dist /usr/local/share/keirouter/frontend/dist
 
 USER nonroot:nonroot
 EXPOSE 20180
-VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD ["/usr/local/bin/keirouter", "-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/keirouter"]
